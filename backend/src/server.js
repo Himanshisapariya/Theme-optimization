@@ -62,13 +62,6 @@ function isIgnorableUploadPath(relativePath) {
   );
 }
 
-function assertUniqueTarget(targetPath, seen, label) {
-  if (seen.has(targetPath)) {
-    throw new Error(`Duplicate ${label} path detected: ${targetPath}`);
-  }
-  seen.add(targetPath);
-}
-
 async function extractZipBuffer(buffer, targetDir, seenPaths) {
   const zip = await JSZip.loadAsync(buffer);
   const entries = Object.values(zip.files);
@@ -77,7 +70,8 @@ async function extractZipBuffer(buffer, targetDir, seenPaths) {
     const relativePath = safeRelativePath(entry.name);
     if (isIgnorableUploadPath(relativePath)) continue;
     const outputPath = path.join(targetDir, relativePath);
-    assertUniqueTarget(outputPath, seenPaths, 'zip entry');
+    if (seenPaths.has(outputPath)) continue;
+    seenPaths.add(outputPath);
     const fileBuffer = await entry.async('nodebuffer');
     await saveBuffer(outputPath, fileBuffer);
   }
@@ -146,7 +140,8 @@ app.post('/api/upload', upload.array('files'), async (req, res) => {
         await extractZipBuffer(file.buffer, paths.sourceDir, seenPaths);
       } else {
         if (isIgnorableUploadPath(relativePath)) continue;
-        assertUniqueTarget(destination, seenPaths, 'upload');
+        if (seenPaths.has(destination)) continue;
+        seenPaths.add(destination);
         await saveBuffer(destination, file.buffer);
         savedFiles += 1;
       }
@@ -167,8 +162,7 @@ app.post('/api/upload', upload.array('files'), async (req, res) => {
       uploadedFiles
     });
   } catch (error) {
-    const status = String(error.message || '').startsWith('Duplicate ') ? 400 : 500;
-    res.status(status).json({ error: error.message || 'Upload failed.' });
+    res.status(500).json({ error: error.message || 'Upload failed.' });
   }
 });
 

@@ -161,14 +161,18 @@ async function writeFilesToDirectoryHandle(directoryHandle, files) {
   }
 }
 
+const IGNORED_DIR_NAMES = new Set(['.git', 'node_modules', '__MACOSX']);
+
 async function collectFilesFromDirectoryHandle(dirHandle, prefix = '') {
   const items = [];
   for await (const [name, entry] of dirHandle.entries()) {
-    const relativePath = prefix ? `${prefix}/${name}` : name;
     if (entry.kind === 'directory') {
+      if (IGNORED_DIR_NAMES.has(name) || name.startsWith('.')) continue;
+      const relativePath = prefix ? `${prefix}/${name}` : name;
       const subItems = await collectFilesFromDirectoryHandle(entry, relativePath);
       items.push(...subItems);
     } else {
+      const relativePath = prefix ? `${prefix}/${name}` : name;
       const file = await entry.getFile();
       items.push({ file, relativePath });
     }

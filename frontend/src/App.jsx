@@ -130,31 +130,10 @@ function base64ToUint8Array(base64) {
   return bytes;
 }
 
-async function clearDirectoryHandle(directoryHandle) {
-  // Remove the existing contents so the local folder mirrors the cleaned workspace.
-  // eslint-disable-next-line no-restricted-syntax
-  for await (const [name, entry] of directoryHandle.entries()) {
-    if (entry.kind === 'directory') {
-      await directoryHandle.removeEntry(name, { recursive: true });
-    } else {
-      await directoryHandle.removeEntry(name);
-    }
-  }
-}
-
-async function writeFilesToDirectoryHandle(directoryHandle, files) {
-  await clearDirectoryHandle(directoryHandle);
-
+async function writeFilesToHandleMap(handleMap, files) {
   for (const file of files) {
-    const parts = file.relativePath.split('/').filter(Boolean);
-    const fileName = parts.pop();
-    let currentDirectory = directoryHandle;
-
-    for (const part of parts) {
-      currentDirectory = await currentDirectory.getDirectoryHandle(part, { create: true });
-    }
-
-    const fileHandle = await currentDirectory.getFileHandle(fileName, { create: true });
+    const fileHandle = handleMap.get(file.relativePath);
+    if (!fileHandle) continue;
     const writable = await fileHandle.createWritable();
     await writable.write(base64ToUint8Array(file.contentBase64));
     await writable.close();
@@ -174,7 +153,7 @@ async function collectFilesFromDirectoryHandle(dirHandle, prefix = '') {
     } else {
       const relativePath = prefix ? `${prefix}/${name}` : name;
       const file = await entry.getFile();
-      items.push({ file, relativePath });
+      items.push({ file, relativePath, handle: entry });
     }
   }
   return items;
@@ -192,6 +171,7 @@ export default function App() {
   const [dropActive, setDropActive] = useState(false);
   const [inputKey, setInputKey] = useState(0);
   const [scanWarnings, setScanWarnings] = useState([]);
+  const [fileHandles, setFileHandles] = useState(new Map());
   const folderInputRef = useRef(null);
   const [localFolderHandle, setLocalFolderHandle] = useState(null);
   const [localFolderName, setLocalFolderName] = useState('');
@@ -263,6 +243,8 @@ export default function App() {
         setLocalFolderHandle(handle);
         setLocalFolderName(handle.name || 'Selected folder');
         const uploaded = await collectFilesFromDirectoryHandle(handle);
+        const map = new Map(uploaded.map(({ relativePath, handle: h }) => [relativePath, h]));
+        setFileHandles(map);
         await uploadFiles(uploaded);
       } catch (error) {
         if (error?.name !== 'AbortError') {
@@ -370,7 +352,7 @@ export default function App() {
         const exportData = await exportResponse.json();
         if (!exportResponse.ok) throw new Error(exportData.error || 'Local folder update failed.');
 
-        await writeFilesToDirectoryHandle(localFolderHandle, exportData.files || []);
+        await writeFilesToHandleMap(fileHandles, exportData.files || []);
         setMessage(`${data.message} Local folder updated directly.`);
         setStep('applied');
       } else {

@@ -258,7 +258,7 @@ app.get('/api/export/:jobId/local', async (req, res) => {
   try {
     const paths = getJobPaths(req.params.jobId);
     await fs.access(paths.sourceDir);
-    const files = await fg(['**/*'], {
+    const files = await fg(['**/*.{css,liquid,html}'], {
       cwd: paths.sourceDir,
       onlyFiles: true,
       dot: true,

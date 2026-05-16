@@ -1,0 +1,13 @@
+{
+  "name": "shopify-css-cleanup-tool",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:frontend": "npm --workspace frontend run dev"
+  }
+}

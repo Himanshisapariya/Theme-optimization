@@ -1,0 +1,663 @@
+import React, { useMemo, useState } from 'react';
+
+const initialSummary = {
+  totalRules: 0,
+  usedRules: 0,
+  unusedRules: 0,
+  estimatedSavingsBytes: 0
+};
+
+function formatBytes(bytes) {
+  if (!bytes && bytes !== 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function downloadBlob(blob, filename) {
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+function filenameFromDisposition(disposition, fallback) {
+  if (!disposition) return fallback;
+  const match = /filename="?([^"]+)"?/i.exec(disposition);
+  return match ? match[1] : fallback;
+}
+
+const IGNORED_UPLOAD_BASENAMES = new Set([
+  '.DS_Store',
+  'Thumbs.db',
+  'desktop.ini',
+  'HEAD',
+  'config',
+  'description',
+  'index',
+  'packed-refs',
+  'FETCH_HEAD'
+]);
+
+function isIgnorableUploadPath(relativePath) {
+  const normalized = String(relativePath || '').replace(/\\/g, '/');
+  const baseName = normalized.split('/').pop();
+  return (
+    !normalized ||
+    normalized.startsWith('__MACOSX/') ||
+    normalized.includes('/__MACOSX/') ||
+    normalized.startsWith('.git/') ||
+    normalized.includes('/.git/') ||
+    normalized.startsWith('.') ||
+    IGNORED_UPLOAD_BASENAMES.has(baseName)
+  );
+}
+
+function normalizeUploadItem(file, relativePath) {
+  return {
+    file,
+    relativePath: relativePath || file.webkitRelativePath || file.name
+  };
+}
+
+async function readAllEntries(reader) {
+  const entries = [];
+  // Chrome returns directory entries in batches, so keep reading until empty.
+  while (true) {
+    // eslint-disable-next-line no-await-in-loop
+    const batch = await new Promise((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (!batch.length) break;
+    entries.push(...batch);
+  }
+  return entries;
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const items = Array.from(dataTransfer.items || []);
+  const supportsEntries = items.some((item) => typeof item.webkitGetAsEntry === 'function');
+
+  if (!supportsEntries) {
+    return Array.from(dataTransfer.files || []).map((file) => normalizeUploadItem(file));
+  }
+
+  const dropped = [];
+
+  async function walkEntry(entry, prefix = '') {
+    if (entry.isFile) {
+      await new Promise((resolve, reject) => {
+        entry.file((file) => {
+          dropped.push(normalizeUploadItem(file, `${prefix}${entry.name}`));
+          resolve();
+        }, reject);
+      });
+      return;
+    }
+
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const children = await readAllEntries(reader);
+      for (const child of children) {
+        // eslint-disable-next-line no-await-in-loop
+        await walkEntry(child, `${prefix}${entry.name}/`);
+      }
+    }
+  }
+
+  for (const item of items) {
+    const entry = item.webkitGetAsEntry();
+    if (entry) {
+      // eslint-disable-next-line no-await-in-loop
+      await walkEntry(entry);
+    }
+  }
+
+  return dropped;
+}
+
+function base64ToUint8Array(base64) {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function clearDirectoryHandle(directoryHandle) {
+  // Remove the existing contents so the local folder mirrors the cleaned workspace.
+  // eslint-disable-next-line no-restricted-syntax
+  for await (const [name, entry] of directoryHandle.entries()) {
+    if (entry.kind === 'directory') {
+      await directoryHandle.removeEntry(name, { recursive: true });
+    } else {
+      await directoryHandle.removeEntry(name);
+    }
+  }
+}
+
+async function writeFilesToDirectoryHandle(directoryHandle, files) {
+  await clearDirectoryHandle(directoryHandle);
+
+  for (const file of files) {
+    const parts = file.relativePath.split('/').filter(Boolean);
+    const fileName = parts.pop();
+    let currentDirectory = directoryHandle;
+
+    for (const part of parts) {
+      currentDirectory = await currentDirectory.getDirectoryHandle(part, { create: true });
+    }
+
+    const fileHandle = await currentDirectory.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(base64ToUint8Array(file.contentBase64));
+    await writable.close();
+  }
+}
+
+
+export default function App() {
+  const [files, setFiles] = useState([]);
+  const [jobId, setJobId] = useState('');
+  const [summary, setSummary] = useState(initialSummary);
+  const [entries, setEntries] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [message, setMessage] = useState('Upload a Shopify theme folder or ZIP to begin.');
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState('idle');
+  const [dropActive, setDropActive] = useState(false);
+  const [inputKey, setInputKey] = useState(0);
+  const [folderKey, setFolderKey] = useState(0);
+  const [scanWarnings, setScanWarnings] = useState([]);
+  const [localFolderHandle, setLocalFolderHandle] = useState(null);
+  const [localFolderName, setLocalFolderName] = useState('');
+
+  const unusedEntries = useMemo(() => entries.filter((entry) => entry.status === 'unused'), [entries]);
+  const usedEntries = useMemo(() => entries.filter((entry) => entry.status === 'used'), [entries]);
+
+  function clearResults() {
+    setSummary(initialSummary);
+    setEntries([]);
+    setSelectedIds(new Set());
+    setScanWarnings([]);
+  }
+
+  async function uploadFiles(uploaded) {
+    const filtered = uploaded.filter(({ relativePath, file }) => !isIgnorableUploadPath(relativePath || file.name));
+    setFiles(filtered);
+    if (filtered.length === 0) {
+      setMessage('Only ignored system files were selected. Please upload the actual theme files or folder.');
+      return;
+    }
+
+    const formData = new FormData();
+    filtered.forEach(({ file, relativePath }) => {
+      formData.append('files', file, relativePath);
+    });
+
+    setLoading(true);
+    setStep('uploading');
+    setMessage('Uploading files...');
+
+    try {
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Upload failed.');
+
+      setJobId(data.jobId);
+      clearResults();
+      setMessage(data.message);
+      setStep('uploaded');
+    } catch (error) {
+      setMessage(error.message);
+      setStep('idle');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleUpload(event) {
+    const uploaded = Array.from(event.target.files || []).map((file) => normalizeUploadItem(file));
+    await uploadFiles(uploaded);
+    event.target.value = '';
+    setInputKey((current) => current + 1);
+  }
+
+  async function handleFolderUpload(event) {
+    const uploaded = Array.from(event.target.files || []).map((file) =>
+      normalizeUploadItem(file, file.webkitRelativePath || file.name)
+    );
+    await uploadFiles(uploaded);
+    event.target.value = '';
+    setFolderKey((current) => current + 1);
+  }
+
+  async function pickLocalFolder() {
+    if (!window.showDirectoryPicker) {
+      setMessage('Your browser does not support direct folder editing. Use download optimized instead.');
+      return;
+    }
+
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      if (permission !== 'granted') {
+        setMessage('Folder permission was not granted.');
+        return;
+      }
+
+      setLocalFolderHandle(handle);
+      setLocalFolderName(handle.name || 'Selected folder');
+      setMessage(`Local folder ready: ${handle.name || 'Selected folder'}.`);
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        setMessage(error.message || 'Unable to select a local folder.');
+      }
+    }
+  }
+
+  async function handleDrop(event) {
+    event.preventDefault();
+    setDropActive(false);
+    const uploaded = await collectDroppedFiles(event.dataTransfer);
+    await uploadFiles(uploaded);
+  }
+
+  async function handleScan() {
+    if (!jobId) {
+      setMessage('Upload files first.');
+      return;
+    }
+
+    setLoading(true);
+    setStep('scanning');
+    setMessage('Scanning CSS selectors...');
+
+    try {
+      const response = await fetch(`/api/scan/${jobId}`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Scan failed.');
+
+      setSummary(data.summary);
+      setEntries(data.entries);
+      setSelectedIds(new Set(data.entries.filter((entry) => entry.status === 'unused').map((entry) => entry.id)));
+      setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      if (data.summary.totalRules === 0) {
+        setMessage('Scan complete, but no CSS rules were found. Check that the uploaded folder contains .css files.');
+      } else if (data.summary.unusedRules === 0) {
+        setMessage('Scan complete. No unused selectors were found in this upload.');
+      } else {
+        const warningText = Array.isArray(data.warnings) && data.warnings.length > 0
+          ? ` Skipped ${data.warnings.length} problematic file(s).`
+          : '';
+        setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${warningText}`);
+      }
+      setStep('scanned');
+    } catch (error) {
+      setMessage(error.message);
+      setStep('uploaded');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function toggleSelection(id) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  async function handleRemove() {
+    if (!jobId) return;
+    if (selectedIds.size === 0) {
+      setMessage('Please select at least one unused selector first.');
+      return;
+    }
+
+    setLoading(true);
+    setStep('removing');
+    setMessage('Creating backup and removing approved selectors...');
+
+    try {
+      const response = await fetch(`/api/remove/${jobId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          selectedIds: Array.from(selectedIds)
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Removal failed.');
+
+      if (localFolderHandle) {
+        setMessage(`${data.message} Writing changes to the selected local folder...`);
+        const exportResponse = await fetch(`/api/export/${jobId}/local`);
+        const exportData = await exportResponse.json();
+        if (!exportResponse.ok) throw new Error(exportData.error || 'Local folder update failed.');
+
+        await writeFilesToDirectoryHandle(localFolderHandle, exportData.files || []);
+        setMessage(`${data.message} Local folder updated directly.`);
+        setStep('applied');
+      } else {
+        setMessage(`${data.message} Removed ${data.removedSelectors} selectors.`);
+        setStep('removed');
+      }
+
+      setScanWarnings([]);
+    } catch (error) {
+      setMessage(error.message);
+      setStep('scanned');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDownload(kind) {
+    if (!jobId) return;
+
+    try {
+      const response = await fetch(`/api/download/${jobId}/${kind}`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Download failed.');
+      }
+
+      const blob = await response.blob();
+      const fallback =
+        kind === 'optimized'
+          ? `optimized-${jobId}.zip`
+          : kind === 'backup'
+            ? `backup-${jobId}.zip`
+            : `report-${jobId}.pdf`;
+      const filename = filenameFromDisposition(response.headers.get('content-disposition'), fallback);
+      downloadBlob(blob, filename);
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }
+
+  const hasResults = entries.length > 0;
+  const removeEnabled = selectedIds.size > 0 && !loading;
+
+  return (
+    <div className="app-shell">
+      <div className="ambient ambient-one" />
+      <div className="ambient ambient-two" />
+
+      <main className="container">
+        <section className="hero">
+          <div>
+            <p className="eyebrow">Shopify CSS cleanup automation</p>
+            <h1>Scan, review, and safely remove unused CSS.</h1>
+            <p className="subcopy">
+              Upload a theme folder, CSS files, or a ZIP. The scanner checks `.liquid`, `.html`, and `.js`
+              files, then protects dynamic Shopify classes from accidental deletion.
+            </p>
+          </div>
+
+          <div className="status-card">
+            <span className={`status-pill status-${step}`}>{step}</span>
+            <p>{message}</p>
+            {loading ? (
+              <div className="loader" aria-label="Loading">
+                <span />
+                <span />
+                <span />
+              </div>
+            ) : null}
+            <div className="status-meta">
+              <span>{files.length} uploaded file(s)</span>
+              <span>{jobId ? `Job ${jobId.slice(0, 8)}` : 'No job yet'}</span>
+              <span>{localFolderName ? `Local folder: ${localFolderName}` : 'No local folder selected'}</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="grid">
+          <div className="panel upload-panel">
+            <h2>Upload</h2>
+            <div className="upload-options">
+              <label className="upload-button">
+                <input
+                  key={`single-${inputKey}`}
+                  type="file"
+                  multiple
+                  accept=".css,.liquid,.html,.js,.zip"
+                  onChange={handleUpload}
+                  className="file-input"
+                />
+                <span>Upload files</span>
+              </label>
+              <label className="upload-button">
+                <input
+                  key={`folder-${folderKey}`}
+                  type="file"
+                  multiple
+                  webkitdirectory=""
+                  directory=""
+                  onChange={handleFolderUpload}
+                  className="file-input"
+                />
+                <span>Upload folder</span>
+              </label>
+              <button className="upload-button" type="button" onClick={pickLocalFolder}>
+                <span>{localFolderName ? 'Change local folder' : 'Choose local folder to edit'}</span>
+              </button>
+            </div>
+            <div
+              className={`dropzone ${dropActive ? 'dropzone-active' : ''}`}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDropActive(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDropActive(true);
+              }}
+              onDragLeave={(event) => {
+                event.preventDefault();
+                setDropActive(false);
+              }}
+              onDrop={handleDrop}
+            >
+              <div className="dropzone-copy">
+                <strong>Drag and drop files or a folder here</strong>
+                <span>Supports single files, theme folders, CSS, Liquid, HTML, JS, and ZIP uploads</span>
+              </div>
+            </div>
+
+            <div className="file-list">
+              {files.length === 0 ? (
+                <p className="empty-state">No files uploaded yet.</p>
+              ) : (
+                files.map(({ file, relativePath }) => (
+                  <div key={`${relativePath}-${file.size}-${file.lastModified}`} className="file-row">
+                    <span>{relativePath}</span>
+                    <span>{formatBytes(file.size)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="actions">
+              <button className="primary" onClick={handleScan} disabled={!jobId || loading}>
+                {loading && step === 'scanning' ? 'Scanning...' : 'Scan CSS'}
+              </button>
+              <button className="secondary" onClick={clearResults} disabled={!hasResults}>
+                Clear Results
+              </button>
+            </div>
+          </div>
+
+          <div className="panel summary-panel">
+            <h2>Report</h2>
+            <div className="summary-grid">
+              <article>
+                <span>Total rules</span>
+                <strong>{summary.totalRules}</strong>
+              </article>
+              <article>
+                <span>Used</span>
+                <strong>{summary.usedRules}</strong>
+              </article>
+              <article>
+                <span>Unused</span>
+                <strong>{summary.unusedRules}</strong>
+              </article>
+              <article>
+                <span>Estimated savings</span>
+                <strong>{formatBytes(summary.estimatedSavingsBytes)}</strong>
+              </article>
+            </div>
+
+            {scanWarnings.length > 0 ? (
+              <div className="warning-panel">
+                <h3>Scan warnings</h3>
+                <ul className="warning-list">
+                  {scanWarnings.map((warning, index) => (
+                    <li key={warning.filePath + '-' + warning.sourceType + '-' + index}>
+                      <strong>{warning.filePath}</strong>
+                      <span>{warning.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="download-actions">
+              <button className="secondary" onClick={() => handleDownload('optimized')} disabled={!(step === 'removed' || step === 'applied')}>
+                Download optimized
+              </button>
+              <button className="secondary" onClick={() => handleDownload('backup')} disabled={!(step === 'removed' || step === 'applied')}>
+                Download backup
+              </button>
+              <button className="secondary" onClick={() => handleDownload('report')} disabled={!(step === 'removed' || step === 'applied')}>
+                Download report PDF
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel table-panel">
+          <div className="table-head">
+            <div>
+              <h2>Selectors</h2>
+              <p>Unused selectors are preselected. Uncheck anything you want to keep.</p>
+            </div>
+            <button className="primary" onClick={handleRemove} disabled={!removeEnabled}>
+              {loading && step === 'removing' ? 'Removing...' : 'Remove selected'}
+            </button>
+          </div>
+
+          <div className="selector-sections">
+            <section className="selector-group selector-group-unused">
+              <div className="group-head">
+                <div>
+                  <h3>Unused selectors</h3>
+                  <p>These are preselected for removal.</p>
+                </div>
+                <span className="group-count">{unusedEntries.length}</span>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Remove</th>
+                      <th>Selector</th>
+                      <th>File name</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {unusedEntries.length === 0 ? (
+                      <tr>
+                        <td colSpan="3" className="empty-state">
+                          No unused selectors found.
+                        </td>
+                      </tr>
+                    ) : (
+                      unusedEntries.map((entry) => (
+                        <tr key={entry.id} className="row-unused">
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.has(entry.id)}
+                              onChange={() => toggleSelection(entry.id)}
+                            />
+                          </td>
+                          <td className="selector-cell">{entry.selector}</td>
+                          <td>{entry.fileName}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="selector-group selector-group-used">
+              <div className="group-head">
+                <div>
+                  <h3>Used selectors</h3>
+                  <p>These are kept for reference and not selected for removal.</p>
+                </div>
+                <span className="group-count">{usedEntries.length}</span>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Selector</th>
+                      <th>File name</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usedEntries.length === 0 ? (
+                      <tr>
+                        <td colSpan="2" className="empty-state">
+                          No used selectors found.
+                        </td>
+                      </tr>
+                    ) : (
+                      usedEntries.map((entry) => (
+                        <tr key={entry.id} className="row-used">
+                          <td className="selector-cell">{entry.selector}</td>
+                          <td>{entry.fileName}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <div className="table-footer">
+            <span>{unusedEntries.length} unused selector(s) preselected</span>
+            <span>{selectedIds.size} selected for removal</span>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}

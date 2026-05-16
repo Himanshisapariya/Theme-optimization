@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 
 const initialSummary = {
   totalRules: 0,
@@ -161,6 +161,20 @@ async function writeFilesToDirectoryHandle(directoryHandle, files) {
   }
 }
 
+async function collectFilesFromDirectoryHandle(dirHandle, prefix = '') {
+  const items = [];
+  for await (const [name, entry] of dirHandle.entries()) {
+    const relativePath = prefix ? `${prefix}/${name}` : name;
+    if (entry.kind === 'directory') {
+      const subItems = await collectFilesFromDirectoryHandle(entry, relativePath);
+      items.push(...subItems);
+    } else {
+      const file = await entry.getFile();
+      items.push({ file, relativePath });
+    }
+  }
+  return items;
+}
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -173,8 +187,8 @@ export default function App() {
   const [step, setStep] = useState('idle');
   const [dropActive, setDropActive] = useState(false);
   const [inputKey, setInputKey] = useState(0);
-  const [folderKey, setFolderKey] = useState(0);
   const [scanWarnings, setScanWarnings] = useState([]);
+  const folderInputRef = useRef(null);
   const [localFolderHandle, setLocalFolderHandle] = useState(null);
   const [localFolderName, setLocalFolderName] = useState('');
 
@@ -233,37 +247,35 @@ export default function App() {
     setInputKey((current) => current + 1);
   }
 
-  async function handleFolderUpload(event) {
+  async function handleFolderButtonClick() {
+    if (window.showDirectoryPicker) {
+      try {
+        const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        const permission = await handle.requestPermission({ mode: 'readwrite' });
+        if (permission !== 'granted') {
+          setMessage('Folder permission was not granted.');
+          return;
+        }
+        setLocalFolderHandle(handle);
+        setLocalFolderName(handle.name || 'Selected folder');
+        const uploaded = await collectFilesFromDirectoryHandle(handle);
+        await uploadFiles(uploaded);
+      } catch (error) {
+        if (error?.name !== 'AbortError') {
+          setMessage(error.message || 'Unable to select a folder.');
+        }
+      }
+    } else {
+      folderInputRef.current?.click();
+    }
+  }
+
+  async function handleFolderInputChange(event) {
     const uploaded = Array.from(event.target.files || []).map((file) =>
       normalizeUploadItem(file, file.webkitRelativePath || file.name)
     );
     await uploadFiles(uploaded);
     event.target.value = '';
-    setFolderKey((current) => current + 1);
-  }
-
-  async function pickLocalFolder() {
-    if (!window.showDirectoryPicker) {
-      setMessage('Your browser does not support direct folder editing. Use download optimized instead.');
-      return;
-    }
-
-    try {
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      const permission = await handle.requestPermission({ mode: 'readwrite' });
-      if (permission !== 'granted') {
-        setMessage('Folder permission was not granted.');
-        return;
-      }
-
-      setLocalFolderHandle(handle);
-      setLocalFolderName(handle.name || 'Selected folder');
-      setMessage(`Local folder ready: ${handle.name || 'Selected folder'}.`);
-    } catch (error) {
-      if (error?.name !== 'AbortError') {
-        setMessage(error.message || 'Unable to select a local folder.');
-      }
-    }
   }
 
   async function handleDrop(event) {
@@ -447,21 +459,19 @@ export default function App() {
                 />
                 <span>Upload files</span>
               </label>
-              <label className="upload-button">
-                <input
-                  key={`folder-${folderKey}`}
-                  type="file"
-                  multiple
-                  webkitdirectory=""
-                  directory=""
-                  onChange={handleFolderUpload}
-                  className="file-input"
-                />
+              <button className="upload-button" type="button" onClick={handleFolderButtonClick}>
                 <span>Upload folder</span>
-              </label>
-              <button className="upload-button" type="button" onClick={pickLocalFolder}>
-                <span>{localFolderName ? 'Change local folder' : 'Choose local folder to edit'}</span>
               </button>
+              <input
+                ref={folderInputRef}
+                type="file"
+                multiple
+                webkitdirectory=""
+                directory=""
+                onChange={handleFolderInputChange}
+                className="file-input"
+                style={{ display: 'none' }}
+              />
             </div>
             <div
               className={`dropzone ${dropActive ? 'dropzone-active' : ''}`}

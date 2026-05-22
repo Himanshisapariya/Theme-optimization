@@ -7,6 +7,8 @@ const initialSummary = {
   estimatedSavingsBytes: 0
 };
 
+const PROTECTED_PRESETS_STORAGE_KEY = 'css-analyser-protected-presets-v1';
+
 function formatBytes(bytes) {
   if (!bytes && bytes !== 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
@@ -46,6 +48,29 @@ function selectorMatchesProtected(selector, patterns) {
 
     return normalizedSelector.includes(barePattern);
   });
+}
+
+function readProtectedPresets() {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.localStorage.getItem(PROTECTED_PRESETS_STORAGE_KEY);
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((item) => ({
+        name: String(item?.name || '').trim(),
+        patterns: Array.isArray(item?.patterns)
+          ? item.patterns.map((pattern) => String(pattern || '').trim()).filter(Boolean)
+          : []
+      }))
+      .filter((item) => item.name);
+  } catch (error) {
+    return [];
+  }
 }
 
 const IGNORED_UPLOAD_BASENAMES = new Set([
@@ -327,12 +352,18 @@ export default function App() {
   const [dropActive, setDropActive] = useState(false);
   const [inputKey, setInputKey] = useState(0);
   const [scanWarnings, setScanWarnings] = useState([]);
+  const [performanceReport, setPerformanceReport] = useState(null);
+  const [reportTab, setReportTab] = useState('overview');
   const fileHandlesRef = useRef(new Map());
   const folderInputRef = useRef(null);
   const [localFolderName, setLocalFolderName] = useState('');
   const [localFolderMode, setLocalFolderMode] = useState('none');
   const [protectedSelectorsText, setProtectedSelectorsText] = useState('');
   const [protectedSelectors, setProtectedSelectors] = useState([]);
+  const [ignoredFilter, setIgnoredFilter] = useState('');
+  const [presetName, setPresetName] = useState('');
+  const [savedProtectedPresets, setSavedProtectedPresets] = useState(() => readProtectedPresets());
+  const [activePresetName, setActivePresetName] = useState('');
 
   const protectedPatterns = useMemo(
     () => protectedSelectors,
@@ -343,6 +374,17 @@ export default function App() {
     () => unusedEntries.filter((entry) => selectorMatchesProtected(entry.selector, protectedPatterns)),
     [unusedEntries, protectedPatterns]
   );
+  const filteredIgnoredUnusedEntries = useMemo(() => {
+    const query = ignoredFilter.trim().toLowerCase();
+    if (!query) return ignoredUnusedEntries;
+
+    return ignoredUnusedEntries.filter((entry) => {
+      const selector = String(entry.selector || '').toLowerCase();
+      const fileName = String(entry.fileName || '').toLowerCase();
+      const filePath = String(entry.filePath || '').toLowerCase();
+      return selector.includes(query) || fileName.includes(query) || filePath.includes(query);
+    });
+  }, [ignoredFilter, ignoredUnusedEntries]);
   const removableUnusedEntries = useMemo(
     () => unusedEntries.filter((entry) => !selectorMatchesProtected(entry.selector, protectedPatterns)),
     [unusedEntries, protectedPatterns]
@@ -353,6 +395,8 @@ export default function App() {
     setEntries([]);
     setSelectedIds(new Set());
     setScanWarnings([]);
+    setPerformanceReport(null);
+    setReportTab('overview');
   }
 
   function parseProtectedSelectors(text) {
@@ -370,8 +414,55 @@ export default function App() {
     setProtectedSelectorsText('');
   }
 
+  function clearProtectedSelectors() {
+    setProtectedSelectors([]);
+    setProtectedSelectorsText('');
+    setActivePresetName('');
+  }
+
   function removeProtectedSelector(value) {
     setProtectedSelectors((current) => current.filter((item) => item !== value));
+  }
+
+  function saveProtectedPreset() {
+    const name = presetName.trim();
+    if (!name || protectedSelectors.length === 0) return;
+
+    setSavedProtectedPresets((current) => {
+      const next = [
+        { name, patterns: [...protectedSelectors] },
+        ...current.filter((preset) => preset.name !== name)
+      ];
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+    setActivePresetName(name);
+  }
+
+  function loadProtectedPreset(name) {
+    const preset = savedProtectedPresets.find((item) => item.name === name);
+    if (!preset) return;
+
+    setProtectedSelectors([...preset.patterns]);
+    setPresetName(preset.name);
+    setActivePresetName(preset.name);
+    setProtectedSelectorsText('');
+  }
+
+  function deleteProtectedPreset(name) {
+    setSavedProtectedPresets((current) => {
+      const next = current.filter((preset) => preset.name !== name);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+
+    if (activePresetName === name) {
+      setActivePresetName('');
+    }
   }
 
   React.useEffect(() => {
@@ -385,6 +476,11 @@ export default function App() {
       return next;
     });
   }, [entries, ignoredUnusedEntries]);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(savedProtectedPresets));
+  }, [savedProtectedPresets]);
 
   async function uploadFiles(uploaded, { skipStrip = false } = {}) {
     const processed = skipStrip
@@ -496,6 +592,7 @@ export default function App() {
 
       setSummary(data.summary);
       setEntries(data.entries);
+      setPerformanceReport(data.performance || null);
       const selectedByDefault = new Set(
         data.entries
           .filter((entry) => entry.status === 'unused')
@@ -504,16 +601,20 @@ export default function App() {
       );
       setSelectedIds(selectedByDefault);
       setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      const recommendationCount = Array.isArray(data.performance?.recommendations) ? data.performance.recommendations.length : 0;
       if (data.summary.totalRules === 0) {
         setMessage('Scan complete, but no CSS rules were found. Check that the uploaded folder contains .css files.');
       } else if (data.summary.unusedRules === 0) {
-        setMessage('Scan complete. No unused selectors were found in this upload.');
+        const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
+        setMessage(`Scan complete. No unused selectors were found in this upload.${performanceText}`);
       } else {
         const warningText = Array.isArray(data.warnings) && data.warnings.length > 0
           ? ` Skipped ${data.warnings.length} problematic file(s).`
           : '';
-        setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${warningText}`);
+        const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
+        setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${warningText}${performanceText}`);
       }
+      setReportTab(recommendationCount > 0 ? 'performance' : 'overview');
       setStep('scanned');
     } catch (error) {
       setMessage(error.message);
@@ -607,7 +708,9 @@ export default function App() {
       }
 
       const blob = await response.blob();
-      const fallback = kind === 'optimized' ? `updated-${jobId}.zip` : `report-${jobId}.pdf`;
+      const fallback = kind === 'optimized'
+        ? `updated-${jobId}.zip`
+        : `report-${jobId}.pdf`;
       const filename = filenameFromDisposition(response.headers.get('content-disposition'), fallback);
       downloadBlob(blob, filename);
     } catch (error) {
@@ -617,6 +720,12 @@ export default function App() {
 
   const hasResults = entries.length > 0;
   const removeEnabled = selectedIds.size > 0 && !loading;
+  const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
+    ? performanceReport.recommendations
+    : [];
+  const unusedCssFiles = Array.isArray(performanceReport?.unusedCssFiles)
+    ? performanceReport.unusedCssFiles
+    : [];
 
   return (
     <div className="app-shell">
@@ -728,6 +837,30 @@ export default function App() {
 
           <div className="panel summary-panel">
             <h2>Report</h2>
+            <div className="report-tabs" role="tablist" aria-label="Report sections">
+              <button
+                type="button"
+                className={`report-tab ${reportTab === 'overview' ? 'report-tab-active' : ''}`}
+                onClick={() => setReportTab('overview')}
+                role="tab"
+                aria-selected={reportTab === 'overview'}
+              >
+                Overview
+              </button>
+              <button
+                type="button"
+                className={`report-tab ${reportTab === 'performance' ? 'report-tab-active' : ''}`}
+                onClick={() => setReportTab('performance')}
+                role="tab"
+                aria-selected={reportTab === 'performance'}
+              >
+                Performance
+                {performanceRecommendations.length > 0 ? <span>{performanceRecommendations.length}</span> : null}
+              </button>
+            </div>
+
+            {reportTab === 'overview' ? (
+              <>
             <div className="summary-grid">
               <article>
                 <span>Total rules</span>
@@ -769,6 +902,69 @@ export default function App() {
                 Download report PDF
               </button>
             </div>
+              </>
+            ) : (
+              <div className="performance-panel">
+                <div className="performance-head">
+                  <div>
+                    <h3>Performance recommendations</h3>
+                    <p>These are generated from the uploaded Shopify theme and focus on speed, LCP, CLS, and asset weight.</p>
+                  </div>
+                  <span className="group-count">{performanceRecommendations.length}</span>
+                </div>
+                {performanceRecommendations.length === 0 ? (
+                  <p className="empty-state performance-empty">No performance recommendations yet. Run a scan to generate them.</p>
+                ) : (
+                  <div className="recommendation-list">
+                    {performanceRecommendations.map((recommendation) => (
+                      <article key={recommendation.id} className={`recommendation recommendation-${recommendation.severity}`}>
+                        <div className="recommendation-top">
+                          <strong>{recommendation.title}</strong>
+                          <span>{recommendation.severity}</span>
+                        </div>
+                        <p>{recommendation.detail}</p>
+                      </article>
+                    ))}
+                  </div>
+                )}
+
+                <div className="unused-css-panel">
+                  <div className="performance-head">
+                    <div>
+                      <h3>CSS files not linked anywhere</h3>
+                      <p>These stylesheet files do not appear to be referenced by the scanned theme files, so they are likely safe to review for removal.</p>
+                    </div>
+                    <span className="group-count">{unusedCssFiles.length}</span>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>File</th>
+                          <th>Size</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unusedCssFiles.length === 0 ? (
+                          <tr>
+                            <td colSpan="2" className="empty-state">
+                              No completely unlinked CSS files were found.
+                            </td>
+                          </tr>
+                        ) : (
+                          unusedCssFiles.map((file) => (
+                            <tr key={file.filePath} className="row-unused">
+                              <td className="selector-cell">{file.filePath}</td>
+                              <td>{formatBytes(file.bytes)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -789,9 +985,14 @@ export default function App() {
                 <h3>Protected selectors</h3>
                 <p>Paste app classes or selector fragments to keep them out of removal, even if they look unused. Separate multiple entries with commas or new lines.</p>
               </div>
-              <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
-                Ignore
-              </button>
+              <div className="protected-actions">
+                <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
+                  Ignore
+                </button>
+                <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
+                  Clear all
+                </button>
+              </div>
             </div>
             <textarea
               value={protectedSelectorsText}
@@ -799,6 +1000,39 @@ export default function App() {
               placeholder=".scaqv-quickadd, .omnisend"
               rows={4}
             />
+            <div className="preset-row">
+              <input
+                className="preset-input"
+                type="text"
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                placeholder="Preset name, e.g. Shopify apps"
+              />
+              <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectors.length === 0}>
+                Save preset
+              </button>
+              <select
+                className="preset-select"
+                value={activePresetName}
+                onChange={(event) => loadProtectedPreset(event.target.value)}
+                disabled={savedProtectedPresets.length === 0}
+              >
+                <option value="">Load saved preset</option>
+                {savedProtectedPresets.map((preset) => (
+                  <option key={preset.name} value={preset.name}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => deleteProtectedPreset(activePresetName)}
+                disabled={!activePresetName}
+              >
+                Delete preset
+              </button>
+            </div>
             <div className="protected-tags">
               {protectedSelectors.length === 0 ? (
                 <p className="empty-state">No protected selectors added yet.</p>
@@ -871,7 +1105,19 @@ export default function App() {
                   <h3>Ignored app selectors</h3>
                   <p>These matched your protected selectors and will not be removed.</p>
                 </div>
-                <span className="group-count">{ignoredUnusedEntries.length}</span>
+                <div className="group-tools">
+                  <input
+                    className="filter-input"
+                    type="search"
+                    value={ignoredFilter}
+                    onChange={(event) => setIgnoredFilter(event.target.value)}
+                    placeholder="Filter ignored selectors"
+                  />
+                  <span className="group-count">
+                    {filteredIgnoredUnusedEntries.length}
+                    {ignoredFilter.trim() ? ` / ${ignoredUnusedEntries.length}` : ''}
+                  </span>
+                </div>
               </div>
 
               <div className="table-wrap">
@@ -883,14 +1129,14 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ignoredUnusedEntries.length === 0 ? (
+                    {filteredIgnoredUnusedEntries.length === 0 ? (
                       <tr>
                         <td colSpan="2" className="empty-state">
-                          No protected selectors matched.
+                          {ignoredFilter.trim() ? 'No ignored selectors matched your filter.' : 'No protected selectors matched.'}
                         </td>
                       </tr>
                     ) : (
-                      ignoredUnusedEntries.map((entry) => (
+                      filteredIgnoredUnusedEntries.map((entry) => (
                         <tr key={entry.id} className="row-used">
                           <td className="selector-cell">{entry.selector}</td>
                           <td>{entry.fileName}</td>

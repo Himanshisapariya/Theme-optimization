@@ -191,6 +191,7 @@ app.post('/api/scan/:jobId', async (req, res) => {
       summary: report.summary,
       entries: report.entries,
       warnings: report.warnings || [],
+      performance: report.performance || null,
       fileCount: report.cssFiles.length,
       reportPath: paths.reportPath
     });
@@ -206,7 +207,8 @@ app.get('/api/jobs/:jobId', async (req, res) => {
     res.json({
       jobId: req.params.jobId,
       summary: report.summary,
-      entries: report.entries
+      entries: report.entries,
+      performance: report.performance || null
     });
   } catch (error) {
     res.status(404).json({ error: 'Job report not found.' });
@@ -329,7 +331,8 @@ app.get('/api/download/:jobId/report', async (req, res) => {
       jobId: req.params.jobId,
       report,
       selectedIds: manifest.selectedIds || [],
-      removedAt: manifest.removedAt
+      removedAt: manifest.removedAt,
+      performance: report.performance || null
     });
 
     sendBufferDownload(res, pdfBuffer, 'application/pdf', `report-${req.params.jobId}.pdf`);

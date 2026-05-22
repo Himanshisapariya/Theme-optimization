@@ -51,6 +51,37 @@ function createCorpusMatcher(staticCorpus, dynamicCorpus) {
   };
 }
 
+function normalizeProtectedPatterns(patterns) {
+  if (!Array.isArray(patterns)) return [];
+  return patterns
+    .map((pattern) => String(pattern || '').trim())
+    .filter(Boolean);
+}
+
+function selectorMatchesProtected(selector, protectedPatterns) {
+  const normalizedSelector = String(selector || '');
+  if (!normalizedSelector || protectedPatterns.length === 0) return false;
+
+  for (const rawPattern of protectedPatterns) {
+    const pattern = String(rawPattern || '').trim();
+    if (!pattern) continue;
+
+    if (normalizedSelector.includes(pattern)) {
+      return true;
+    }
+
+    const barePattern = pattern.replace(/^[.#\s]+/, '');
+    if (!barePattern) continue;
+
+    const boundary = buildBoundaryPattern(barePattern);
+    if (boundary.test(normalizedSelector)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function extractTokensFromSelector(selector) {
   const tokens = [];
 
@@ -299,8 +330,9 @@ export async function readReport(reportPath) {
   return JSON.parse(raw);
 }
 
-export async function removeSelectedSelectors(cleanedDir, selectedIds, report) {
+export async function removeSelectedSelectors(workspaceDir, selectedIds, report, protectedPatterns = []) {
   const selectedSet = new Set(selectedIds);
+  const normalizedProtectedPatterns = normalizeProtectedPatterns(protectedPatterns);
   const validIds = new Set(
     report.entries
       .filter((entry) => entry.status === 'unused')
@@ -314,17 +346,18 @@ export async function removeSelectedSelectors(cleanedDir, selectedIds, report) {
   }
 
   const cssFiles = await fg(['**/*.css'], {
-    cwd: cleanedDir,
+    cwd: workspaceDir,
     onlyFiles: true,
     dot: true,
     ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
   });
 
   let removedSelectors = 0;
+  let protectedSelectorsSkipped = 0;
 
   for (const relativePath of cssFiles) {
-    const inputPath = path.join(cleanedDir, relativePath);
-    const outputPath = path.join(cleanedDir, relativePath);
+    const inputPath = path.join(workspaceDir, relativePath);
+    const outputPath = path.join(workspaceDir, relativePath);
     const css = await readText(inputPath);
     const root = postcss.parse(css, { from: inputPath });
     const entriesForFile = report.entries.filter((entry) => entry.filePath === relativePath && entry.sourceType === 'css');
@@ -344,9 +377,12 @@ export async function removeSelectedSelectors(cleanedDir, selectedIds, report) {
         const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
         const filteredSelectors = selectors.filter((selector, selectorIndex) => {
           const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
-          if (entry && selectedSet.has(entry.id)) {
+          if (entry && selectedSet.has(entry.id) && !selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
             removedSelectors += 1;
             return false;
+          }
+          if (entry && selectedSet.has(entry.id) && selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+            protectedSelectorsSkipped += 1;
           }
           return true;
         });
@@ -366,14 +402,14 @@ export async function removeSelectedSelectors(cleanedDir, selectedIds, report) {
   }
 
   const markupFiles = await fg(['**/*.{liquid,html}'], {
-    cwd: cleanedDir,
+    cwd: workspaceDir,
     onlyFiles: true,
     dot: true,
     ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
   });
 
   for (const relativePath of markupFiles) {
-    const inputPath = path.join(cleanedDir, relativePath);
+    const inputPath = path.join(workspaceDir, relativePath);
     const original = await readText(inputPath);
     const entriesForFile = report.entries.filter(
       (entry) => entry.filePath === relativePath && entry.sourceType === 'style-block'
@@ -410,15 +446,18 @@ export async function removeSelectedSelectors(cleanedDir, selectedIds, report) {
       root.walkRules((rule) => {
         const entriesForRule = ruleLookup.get(currentRuleIndex) || [];
         if (entriesForRule.length > 0) {
-          const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
-          const filteredSelectors = selectors.filter((selector, selectorIndex) => {
-            const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
-            if (entry && selectedSet.has(entry.id)) {
-              removedSelectors += 1;
-              return false;
-            }
-            return true;
-          });
+        const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
+        const filteredSelectors = selectors.filter((selector, selectorIndex) => {
+          const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
+          if (entry && selectedSet.has(entry.id) && !selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+            removedSelectors += 1;
+            return false;
+          }
+          if (entry && selectedSet.has(entry.id) && selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+            protectedSelectorsSkipped += 1;
+          }
+          return true;
+        });
 
           if (filteredSelectors.length === 0) {
             rule.remove();
@@ -437,13 +476,8 @@ export async function removeSelectedSelectors(cleanedDir, selectedIds, report) {
   }
 
   return {
-    cleanedDir,
-    removedSelectors
+    workspaceDir,
+    removedSelectors,
+    protectedSelectorsSkipped
   };
-}
-
-export async function copyFilesPreservingStructure(sourceDir, targetDir) {
-  await fs.rm(targetDir, { recursive: true, force: true });
-  await fs.mkdir(targetDir, { recursive: true });
-  await fs.cp(sourceDir, targetDir, { recursive: true });
 }

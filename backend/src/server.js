@@ -8,7 +8,6 @@ import JSZip from 'jszip';
 import fg from 'fast-glob';
 import { ensureAppDirs, getJobPaths } from './storage.js';
 import {
-  copyFilesPreservingStructure,
   readReport,
   removeSelectedSelectors,
   scanWorkspace,
@@ -62,14 +61,44 @@ function isIgnorableUploadPath(relativePath) {
   );
 }
 
+function collectZipFileEntries(zip) {
+  return Object.values(zip.files)
+    .filter((entry) => !entry.dir)
+    .map((entry) => ({
+      entry,
+      relativePath: safeRelativePath(entry.name)
+    }))
+    .filter(({ relativePath }) => !isIgnorableUploadPath(relativePath));
+}
+
+function stripSharedRootFolder(relativePaths) {
+  if (relativePaths.length <= 1) {
+    return { shouldStrip: false, rootName: '' };
+  }
+
+  const firstSegments = relativePaths
+    .map((relativePath) => relativePath.split('/').filter(Boolean)[0])
+    .filter(Boolean);
+
+  const rootName = firstSegments[0];
+  const shouldStrip =
+    Boolean(rootName) &&
+    firstSegments.every((segment) => segment === rootName) &&
+    relativePaths.some((relativePath) => relativePath.includes('/'));
+
+  return { shouldStrip, rootName };
+}
+
 async function extractZipBuffer(buffer, targetDir, seenPaths) {
   const zip = await JSZip.loadAsync(buffer);
-  const entries = Object.values(zip.files);
-  for (const entry of entries) {
-    if (entry.dir) continue;
-    const relativePath = safeRelativePath(entry.name);
-    if (isIgnorableUploadPath(relativePath)) continue;
-    const outputPath = path.join(targetDir, relativePath);
+  const fileEntries = collectZipFileEntries(zip);
+  const { shouldStrip, rootName } = stripSharedRootFolder(fileEntries.map(({ relativePath }) => relativePath));
+
+  for (const { entry, relativePath } of fileEntries) {
+    const normalizedPath = shouldStrip && relativePath.startsWith(`${rootName}/`)
+      ? relativePath.slice(rootName.length + 1)
+      : relativePath;
+    const outputPath = path.join(targetDir, normalizedPath);
     if (seenPaths.has(outputPath)) continue;
     seenPaths.add(outputPath);
     const fileBuffer = await entry.async('nodebuffer');
@@ -77,27 +106,6 @@ async function extractZipBuffer(buffer, targetDir, seenPaths) {
   }
 }
 
-async function copyOriginalCssFiles(sourceDir, backupDir) {
-  const cssFiles = await fg(['**/*.css'], {
-    cwd: sourceDir,
-    onlyFiles: true,
-    dot: true,
-    ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
-  });
-
-  for (const relativePath of cssFiles) {
-    const from = path.join(sourceDir, relativePath);
-    const to = path.join(backupDir, relativePath);
-    await fs.mkdir(path.dirname(to), { recursive: true });
-    await fs.copyFile(from, to);
-  }
-}
-
-async function replaceDirectoryContents(sourceDir, targetDir) {
-  await fs.rm(targetDir, { recursive: true, force: true });
-  await fs.mkdir(targetDir, { recursive: true });
-  await fs.cp(sourceDir, targetDir, { recursive: true });
-}
 
 async function listFiles(dir) {
   return fg(['**/*'], {
@@ -208,7 +216,7 @@ app.get('/api/jobs/:jobId', async (req, res) => {
 app.post('/api/remove/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { selectedIds = [] } = req.body || {};
+    const { selectedIds = [], protectedPatterns = [] } = req.body || {};
     if (!Array.isArray(selectedIds) || selectedIds.length === 0) {
       return res.status(400).json({ error: 'Please select at least one unused selector to remove.' });
     }
@@ -221,19 +229,24 @@ app.post('/api/remove/:jobId', async (req, res) => {
       return res.status(400).json({ error: 'One or more selectors are no longer available for removal.' });
     }
 
-    await fs.mkdir(paths.backupOriginalDir, { recursive: true });
-    await copyOriginalCssFiles(paths.sourceDir, paths.backupOriginalDir);
-
-    const result = await removeSelectedSelectors(paths.sourceDir, selectedIds, report);
-    await copyFilesPreservingStructure(paths.sourceDir, paths.cleanedDir);
-    await fs.mkdir(paths.backupDir, { recursive: true });
-    await fs.writeFile(paths.manifestPath, JSON.stringify({ selectedIds, removedAt: new Date().toISOString() }, null, 2));
+    const result = await removeSelectedSelectors(paths.sourceDir, selectedIds, report, protectedPatterns);
+    await fs.writeFile(
+      paths.manifestPath,
+      JSON.stringify({
+        selectedIds,
+        protectedPatterns,
+        removedAt: new Date().toISOString()
+      }, null, 2)
+    );
 
     res.json({
       jobId,
-      message: 'Selected selectors were removed directly from the uploaded workspace after backup creation.',
+      message: result.protectedSelectorsSkipped > 0
+        ? `Selected selectors were removed directly from the uploaded workspace, and ${result.protectedSelectorsSkipped} protected selector(s) were skipped.`
+        : 'Selected selectors were removed directly from the uploaded workspace.',
       removedSelectors: result.removedSelectors,
-      cleanedDir: result.cleanedDir
+      protectedSelectorsSkipped: result.protectedSelectorsSkipped,
+      workspaceDir: result.workspaceDir
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Removal failed.' });
@@ -244,7 +257,7 @@ app.post('/api/apply/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
     const paths = getJobPaths(jobId);
-    await fs.access(paths.cleanedDir);
+    await fs.access(paths.sourceDir);
     res.json({
       jobId,
       message: 'The uploaded workspace is already updated when you remove selectors.'
@@ -287,36 +300,24 @@ app.get('/api/export/:jobId/local', async (req, res) => {
 app.get('/api/download/:jobId/optimized', async (req, res) => {
   try {
     const paths = getJobPaths(req.params.jobId);
-    await fs.access(paths.cleanedDir);
-    const files = await listFiles(paths.cleanedDir);
+    await fs.access(paths.sourceDir);
+    const files = await listFiles(paths.sourceDir);
     if (files.length === 1) {
       const singleFile = files[0];
-      const filePath = path.join(paths.cleanedDir, singleFile);
+      const filePath = path.join(paths.sourceDir, singleFile);
       const buffer = await fs.readFile(filePath);
       const filename = path.basename(singleFile);
       sendBufferDownload(res, buffer, 'application/octet-stream', filename);
       return;
     }
 
-    const zipBuffer = await createZipFromDirectory(paths.cleanedDir);
-    sendBufferDownload(res, zipBuffer, 'application/zip', `optimized-${req.params.jobId}.zip`);
+    const zipBuffer = await createZipFromDirectory(paths.sourceDir);
+    sendBufferDownload(res, zipBuffer, 'application/zip', `updated-${req.params.jobId}.zip`);
   } catch (error) {
-    res.status(404).json({ error: 'Cleaned files not found yet. Run removal first.' });
+    res.status(404).json({ error: 'Updated files not found yet. Run removal first.' });
   }
 });
 
-app.get('/api/download/:jobId/backup', async (req, res) => {
-  try {
-    const paths = getJobPaths(req.params.jobId);
-    await fs.access(paths.backupOriginalDir);
-    const zipBuffer = await createZipFromDirectory(paths.backupOriginalDir);
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="backup-${req.params.jobId}.zip"`);
-    res.send(zipBuffer);
-  } catch (error) {
-    res.status(404).json({ error: 'Backup not found yet. Run removal first.' });
-  }
-});
 
 app.get('/api/download/:jobId/report', async (req, res) => {
   try {

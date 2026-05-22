@@ -32,6 +32,22 @@ function filenameFromDisposition(disposition, fallback) {
   return match ? match[1] : fallback;
 }
 
+function selectorMatchesProtected(selector, patterns) {
+  const normalizedSelector = String(selector || '');
+  if (!normalizedSelector) return false;
+
+  return patterns.some((rawPattern) => {
+    const pattern = String(rawPattern || '').trim();
+    if (!pattern) return false;
+    if (normalizedSelector.includes(pattern)) return true;
+
+    const barePattern = pattern.replace(/^[.#\s]+/, '');
+    if (!barePattern) return false;
+
+    return normalizedSelector.includes(barePattern);
+  });
+}
+
 const IGNORED_UPLOAD_BASENAMES = new Set([
   '.DS_Store',
   'Thumbs.db',
@@ -63,6 +79,38 @@ function normalizeUploadItem(file, relativePath) {
     file,
     relativePath: relativePath || file.webkitRelativePath || file.name
   };
+}
+
+function stripCommonRootFolder(uploaded) {
+  const normalized = uploaded
+    .map((item) => ({
+      ...item,
+      relativePath: String(item.relativePath || item.file?.name || '').replace(/\\/g, '/')
+    }))
+    .filter((item) => item.relativePath);
+
+  if (normalized.length <= 1) {
+    return normalized;
+  }
+
+  const firstSegments = normalized.map((item) => item.relativePath.split('/').filter(Boolean)[0]).filter(Boolean);
+  const rootName = firstSegments[0];
+  const hasSharedRoot = rootName && firstSegments.every((segment) => segment === rootName) && normalized.some((item) => item.relativePath.includes('/'));
+
+  if (!hasSharedRoot) {
+    return normalized;
+  }
+
+  return normalized.map((item) => {
+    const prefix = `${rootName}/`;
+    const relativePath = item.relativePath.startsWith(prefix)
+      ? item.relativePath.slice(prefix.length)
+      : item.relativePath;
+    return {
+      ...item,
+      relativePath: relativePath || item.file?.name || item.relativePath
+    };
+  });
 }
 
 async function readAllEntries(reader) {
@@ -130,14 +178,122 @@ function base64ToUint8Array(base64) {
   return bytes;
 }
 
-async function writeFilesToHandleMap(handleMap, files) {
-  for (const file of files) {
-    const fileHandle = handleMap.get(file.relativePath);
-    if (!fileHandle) continue;
-    const writable = await fileHandle.createWritable();
-    await writable.write(base64ToUint8Array(file.contentBase64));
-    await writable.close();
+function normalizeRelativePath(relativePath) {
+  return String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function candidateHandleKeys(relativePath, folderName = '') {
+  const normalized = normalizeRelativePath(relativePath);
+  const candidates = new Set();
+
+  if (!normalized) return [];
+
+  candidates.add(normalized);
+
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length > 1) {
+    candidates.add(parts.slice(1).join('/'));
   }
+
+  if (folderName) {
+    const prefix = `${normalizeRelativePath(folderName)}/`;
+    if (normalized.startsWith(prefix)) {
+      candidates.add(normalized.slice(prefix.length));
+    }
+  }
+
+  if (parts.length > 2) {
+    candidates.add(parts.slice(2).join('/'));
+  }
+
+  return [...candidates].filter(Boolean);
+}
+
+function buildHandleLookup(uploaded) {
+  const lookup = new Map();
+
+  for (const { relativePath, handle } of uploaded) {
+    const normalized = normalizeRelativePath(relativePath);
+    if (!normalized || !handle) continue;
+
+    const parts = normalized.split('/').filter(Boolean);
+    const suffixes = [];
+
+    for (let index = 0; index < parts.length; index += 1) {
+      suffixes.push(parts.slice(index).join('/'));
+    }
+
+    for (const key of suffixes) {
+      const existing = lookup.get(key);
+      if (existing) {
+        existing.add(handle);
+      } else {
+        lookup.set(key, new Set([handle]));
+      }
+    }
+  }
+
+  return lookup;
+}
+
+async function ensureWritePermission(handle) {
+  if (!handle) return false;
+
+  try {
+    if (typeof handle.queryPermission === 'function') {
+      const current = await handle.queryPermission({ mode: 'readwrite' });
+      if (current === 'granted') return true;
+    }
+
+    if (typeof handle.requestPermission === 'function') {
+      const next = await handle.requestPermission({ mode: 'readwrite' });
+      return next === 'granted';
+    }
+  } catch (error) {
+    return false;
+  }
+
+  return false;
+}
+
+async function writeFilesToHandleMap(handleMap, files, folderName = '') {
+  let written = 0;
+  let failed = 0;
+  let firstError = '';
+
+  for (const file of files) {
+    const candidates = candidateHandleKeys(file.relativePath, folderName);
+    let handle = null;
+
+    for (const candidate of candidates) {
+      const matches = handleMap.get(candidate);
+      if (matches && matches.size === 1) {
+        handle = [...matches][0];
+        break;
+      }
+    }
+
+    if (!handle) {
+      continue;
+    }
+
+    try {
+      const canWrite = await ensureWritePermission(handle);
+      if (!canWrite) {
+        throw new Error('Write permission not granted for this file');
+      }
+      const writable = await handle.createWritable();
+      await writable.write(base64ToUint8Array(file.contentBase64));
+      await writable.close();
+      written++;
+    } catch (err) {
+      failed++;
+      if (!firstError) firstError = err?.message || 'Write failed';
+      console.warn('[CSS Analyser] skip', file.relativePath, err?.message);
+    }
+  }
+
+  return { written, failed, firstError };
 }
 
 const IGNORED_DIR_NAMES = new Set(['.git', 'node_modules', '__MACOSX']);
@@ -171,13 +327,26 @@ export default function App() {
   const [dropActive, setDropActive] = useState(false);
   const [inputKey, setInputKey] = useState(0);
   const [scanWarnings, setScanWarnings] = useState([]);
-  const [fileHandles, setFileHandles] = useState(new Map());
+  const fileHandlesRef = useRef(new Map());
   const folderInputRef = useRef(null);
-  const [localFolderHandle, setLocalFolderHandle] = useState(null);
   const [localFolderName, setLocalFolderName] = useState('');
+  const [localFolderMode, setLocalFolderMode] = useState('none');
+  const [protectedSelectorsText, setProtectedSelectorsText] = useState('');
+  const [protectedSelectors, setProtectedSelectors] = useState([]);
 
+  const protectedPatterns = useMemo(
+    () => protectedSelectors,
+    [protectedSelectors]
+  );
   const unusedEntries = useMemo(() => entries.filter((entry) => entry.status === 'unused'), [entries]);
-  const usedEntries = useMemo(() => entries.filter((entry) => entry.status === 'used'), [entries]);
+  const ignoredUnusedEntries = useMemo(
+    () => unusedEntries.filter((entry) => selectorMatchesProtected(entry.selector, protectedPatterns)),
+    [unusedEntries, protectedPatterns]
+  );
+  const removableUnusedEntries = useMemo(
+    () => unusedEntries.filter((entry) => !selectorMatchesProtected(entry.selector, protectedPatterns)),
+    [unusedEntries, protectedPatterns]
+  );
 
   function clearResults() {
     setSummary(initialSummary);
@@ -186,8 +355,42 @@ export default function App() {
     setScanWarnings([]);
   }
 
-  async function uploadFiles(uploaded) {
-    const filtered = uploaded.filter(({ relativePath, file }) => !isIgnorableUploadPath(relativePath || file.name));
+  function parseProtectedSelectors(text) {
+    return String(text || '')
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function addProtectedSelectors() {
+    const nextValues = parseProtectedSelectors(protectedSelectorsText);
+    if (nextValues.length === 0) return;
+
+    setProtectedSelectors((current) => [...new Set([...current, ...nextValues])]);
+    setProtectedSelectorsText('');
+  }
+
+  function removeProtectedSelector(value) {
+    setProtectedSelectors((current) => current.filter((item) => item !== value));
+  }
+
+  React.useEffect(() => {
+    if (entries.length === 0) return;
+
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const entry of ignoredUnusedEntries) {
+        next.delete(entry.id);
+      }
+      return next;
+    });
+  }, [entries, ignoredUnusedEntries]);
+
+  async function uploadFiles(uploaded, { skipStrip = false } = {}) {
+    const processed = skipStrip
+      ? uploaded.map((item) => ({ ...item, relativePath: String(item.relativePath || item.file?.name || '').replace(/\\/g, '/') })).filter((item) => item.relativePath)
+      : stripCommonRootFolder(uploaded);
+    const filtered = processed.filter(({ relativePath, file }) => !isIgnorableUploadPath(relativePath || file.name));
     setFiles(filtered);
     if (filtered.length === 0) {
       setMessage('Only ignored system files were selected. Please upload the actual theme files or folder.');
@@ -225,6 +428,9 @@ export default function App() {
   }
 
   async function handleUpload(event) {
+    setLocalFolderName('');
+    setLocalFolderMode('none');
+    fileHandlesRef.current = new Map();
     const uploaded = Array.from(event.target.files || []).map((file) => normalizeUploadItem(file));
     await uploadFiles(uploaded);
     event.target.value = '';
@@ -234,18 +440,14 @@ export default function App() {
   async function handleFolderButtonClick() {
     if (window.showDirectoryPicker) {
       try {
+        // mode:'readwrite' grants write access as part of the picker
         const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-        const permission = await handle.requestPermission({ mode: 'readwrite' });
-        if (permission !== 'granted') {
-          setMessage('Folder permission was not granted.');
-          return;
-        }
-        setLocalFolderHandle(handle);
-        setLocalFolderName(handle.name || 'Selected folder');
         const uploaded = await collectFilesFromDirectoryHandle(handle);
-        const map = new Map(uploaded.map(({ relativePath, handle: h }) => [relativePath, h]));
-        setFileHandles(map);
-        await uploadFiles(uploaded);
+        fileHandlesRef.current = buildHandleLookup(uploaded);
+        // skipStrip: paths from collectFilesFromDirectoryHandle are already relative to handle root
+        await uploadFiles(uploaded, { skipStrip: true });
+        setLocalFolderName(handle.name || 'Selected folder');
+        setLocalFolderMode('handle');
       } catch (error) {
         if (error?.name !== 'AbortError') {
           setMessage(error.message || 'Unable to select a folder.');
@@ -257,6 +459,9 @@ export default function App() {
   }
 
   async function handleFolderInputChange(event) {
+    setLocalFolderName('');
+    setLocalFolderMode('none');
+    fileHandlesRef.current = new Map();
     const uploaded = Array.from(event.target.files || []).map((file) =>
       normalizeUploadItem(file, file.webkitRelativePath || file.name)
     );
@@ -267,6 +472,9 @@ export default function App() {
   async function handleDrop(event) {
     event.preventDefault();
     setDropActive(false);
+    setLocalFolderName('');
+    setLocalFolderMode('none');
+    fileHandlesRef.current = new Map();
     const uploaded = await collectDroppedFiles(event.dataTransfer);
     await uploadFiles(uploaded);
   }
@@ -288,7 +496,13 @@ export default function App() {
 
       setSummary(data.summary);
       setEntries(data.entries);
-      setSelectedIds(new Set(data.entries.filter((entry) => entry.status === 'unused').map((entry) => entry.id)));
+      const selectedByDefault = new Set(
+        data.entries
+          .filter((entry) => entry.status === 'unused')
+          .filter((entry) => !selectorMatchesProtected(entry.selector, protectedPatterns))
+          .map((entry) => entry.id)
+      );
+      setSelectedIds(selectedByDefault);
       setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       if (data.summary.totalRules === 0) {
         setMessage('Scan complete, but no CSS rules were found. Check that the uploaded folder contains .css files.');
@@ -330,37 +544,50 @@ export default function App() {
 
     setLoading(true);
     setStep('removing');
-    setMessage('Creating backup and removing approved selectors...');
+    setMessage('Removing unused selectors...');
 
     try {
       const response = await fetch(`/api/remove/${jobId}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          selectedIds: Array.from(selectedIds)
+          selectedIds: Array.from(selectedIds),
+          protectedPatterns
         })
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Removal failed.');
+      setScanWarnings([]);
+      const protectedNote = data.protectedSelectorsSkipped > 0
+        ? ` ${data.protectedSelectorsSkipped} protected selector(s) were skipped.`
+        : '';
+      const ignoredNote = protectedPatterns.length > 0
+        ? ` Ignored patterns: ${protectedPatterns.join(', ')}.`
+        : '';
 
-      if (localFolderHandle) {
-        setMessage(`${data.message} Writing changes to the selected local folder...`);
+      if (localFolderMode === 'handle') {
+        setMessage('Writing changes directly to your folder...');
         const exportResponse = await fetch(`/api/export/${jobId}/local`);
         const exportData = await exportResponse.json();
-        if (!exportResponse.ok) throw new Error(exportData.error || 'Local folder update failed.');
-
-        await writeFilesToHandleMap(fileHandles, exportData.files || []);
-        setMessage(`${data.message} Local folder updated directly.`);
+        if (!exportResponse.ok) throw new Error(exportData.error || 'Export failed.');
+        const exportFiles = exportData.files || [];
+        const result = fileHandlesRef.current.size > 0
+          ? await writeFilesToHandleMap(fileHandlesRef.current, exportFiles, localFolderName)
+          : { written: 0, failed: 0, firstError: '' };
+        const { written, failed, firstError } = result;
+        setMessage(
+          written > 0
+            ? `Done. Removed ${data.removedSelectors} selector(s) and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
+            : failed > 0
+              ? `Removed ${data.removedSelectors} selector(s), but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+              : `Removed ${data.removedSelectors} selector(s), but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+        );
         setStep('applied');
       } else {
-        setMessage(`${data.message} Removed ${data.removedSelectors} selectors.`);
         setStep('removed');
+        setMessage(`Removed ${data.removedSelectors} selector(s). Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`);
       }
-
-      setScanWarnings([]);
     } catch (error) {
       setMessage(error.message);
       setStep('scanned');
@@ -380,12 +607,7 @@ export default function App() {
       }
 
       const blob = await response.blob();
-      const fallback =
-        kind === 'optimized'
-          ? `optimized-${jobId}.zip`
-          : kind === 'backup'
-            ? `backup-${jobId}.zip`
-            : `report-${jobId}.pdf`;
+      const fallback = kind === 'optimized' ? `updated-${jobId}.zip` : `report-${jobId}.pdf`;
       const filename = filenameFromDisposition(response.headers.get('content-disposition'), fallback);
       downloadBlob(blob, filename);
     } catch (error) {
@@ -541,10 +763,7 @@ export default function App() {
 
             <div className="download-actions">
               <button className="secondary" onClick={() => handleDownload('optimized')} disabled={!(step === 'removed' || step === 'applied')}>
-                Download optimized
-              </button>
-              <button className="secondary" onClick={() => handleDownload('backup')} disabled={!(step === 'removed' || step === 'applied')}>
-                Download backup
+                Download updated
               </button>
               <button className="secondary" onClick={() => handleDownload('report')} disabled={!(step === 'removed' || step === 'applied')}>
                 Download report PDF
@@ -564,14 +783,50 @@ export default function App() {
             </button>
           </div>
 
+          <div className="protected-panel">
+            <div className="protected-head">
+              <div>
+                <h3>Protected selectors</h3>
+                <p>Paste app classes or selector fragments to keep them out of removal, even if they look unused. Separate multiple entries with commas or new lines.</p>
+              </div>
+              <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
+                Ignore
+              </button>
+            </div>
+            <textarea
+              value={protectedSelectorsText}
+              onChange={(event) => setProtectedSelectorsText(event.target.value)}
+              placeholder=".scaqv-quickadd, .omnisend"
+              rows={4}
+            />
+            <div className="protected-tags">
+              {protectedSelectors.length === 0 ? (
+                <p className="empty-state">No protected selectors added yet.</p>
+              ) : (
+                protectedSelectors.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className="protected-tag"
+                    onClick={() => removeProtectedSelector(value)}
+                    title="Click to remove"
+                  >
+                    <span>{value}</span>
+                    <span aria-hidden="true">×</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
           <div className="selector-sections">
             <section className="selector-group selector-group-unused">
               <div className="group-head">
                 <div>
-                  <h3>Unused selectors</h3>
+                  <h3>Removable unused selectors</h3>
                   <p>These are preselected for removal.</p>
                 </div>
-                <span className="group-count">{unusedEntries.length}</span>
+                <span className="group-count">{removableUnusedEntries.length}</span>
               </div>
 
               <div className="table-wrap">
@@ -584,14 +839,14 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {unusedEntries.length === 0 ? (
+                    {removableUnusedEntries.length === 0 ? (
                       <tr>
                         <td colSpan="3" className="empty-state">
-                          No unused selectors found.
+                          No removable unused selectors found.
                         </td>
                       </tr>
                     ) : (
-                      unusedEntries.map((entry) => (
+                      removableUnusedEntries.map((entry) => (
                         <tr key={entry.id} className="row-unused">
                           <td>
                             <input
@@ -613,10 +868,10 @@ export default function App() {
             <section className="selector-group selector-group-used">
               <div className="group-head">
                 <div>
-                  <h3>Used selectors</h3>
-                  <p>These are kept for reference and not selected for removal.</p>
+                  <h3>Ignored app selectors</h3>
+                  <p>These matched your protected selectors and will not be removed.</p>
                 </div>
-                <span className="group-count">{usedEntries.length}</span>
+                <span className="group-count">{ignoredUnusedEntries.length}</span>
               </div>
 
               <div className="table-wrap">
@@ -628,14 +883,14 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {usedEntries.length === 0 ? (
+                    {ignoredUnusedEntries.length === 0 ? (
                       <tr>
                         <td colSpan="2" className="empty-state">
-                          No used selectors found.
+                          No protected selectors matched.
                         </td>
                       </tr>
                     ) : (
-                      usedEntries.map((entry) => (
+                      ignoredUnusedEntries.map((entry) => (
                         <tr key={entry.id} className="row-used">
                           <td className="selector-cell">{entry.selector}</td>
                           <td>{entry.fileName}</td>
@@ -649,7 +904,8 @@ export default function App() {
           </div>
 
           <div className="table-footer">
-            <span>{unusedEntries.length} unused selector(s) preselected</span>
+            <span>{removableUnusedEntries.length} unused selector(s) preselected</span>
+            <span>{ignoredUnusedEntries.length} protected selector(s) ignored</span>
             <span>{selectedIds.size} selected for removal</span>
           </div>
         </section>

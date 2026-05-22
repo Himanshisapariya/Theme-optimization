@@ -11,13 +11,13 @@ A basic full-stack app for safely scanning Shopify theme CSS, reporting unused s
 - Keep dynamic Liquid-based class usage safe by treating it as protected
 - Let you manually approve what to remove
 - Create backups before any CSS is changed
-- Download optimized files, backup ZIPs, and a PDF removal report
+- Update the uploaded workspace in place, then download a fresh copy, backup ZIP, or PDF removal report
 
 ## Project structure
 
 - `frontend/` - React UI
 - `backend/` - Node.js + Express API
-- `backend/uploads/` - uploaded themes and generated cleaned output
+- `backend/uploads/` - uploaded themes and the in-place updated workspace
 - `backend/backups/` - original CSS backups before removal
 
 ## Upload types
@@ -31,8 +31,8 @@ You can upload:
 
 ## Download behavior
 
-- If the cleaned result has only one file, the optimized download is sent as that file directly.
-- If the cleaned result has multiple files, the optimized download is sent as a ZIP.
+- If the updated result has only one file, the updated download is sent as that file directly.
+- If the updated result has multiple files, the updated download is sent as a ZIP.
 - After removal, you can also download a PDF report that lists which selectors were removed from which file.
 
 ## Setup
@@ -76,8 +76,8 @@ The app always follows this order:
 3. Review report
 4. Manually approve selectors
 5. Create backup
-6. Remove CSS
-7. Download cleaned files or backups
+6. Remove CSS in place
+7. Download an updated copy or backups
 
 ## Notes
 

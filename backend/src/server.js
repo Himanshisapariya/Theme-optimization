@@ -190,6 +190,7 @@ app.post('/api/scan/:jobId', async (req, res) => {
       jobId,
       summary: report.summary,
       entries: report.entries,
+      commentEntries: report.commentEntries || [],
       warnings: report.warnings || [],
       performance: report.performance || null,
       fileCount: report.cssFiles.length,
@@ -208,6 +209,7 @@ app.get('/api/jobs/:jobId', async (req, res) => {
       jobId: req.params.jobId,
       summary: report.summary,
       entries: report.entries,
+      commentEntries: report.commentEntries || [],
       performance: report.performance || null
     });
   } catch (error) {
@@ -218,35 +220,48 @@ app.get('/api/jobs/:jobId', async (req, res) => {
 app.post('/api/remove/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { selectedIds = [], protectedPatterns = [] } = req.body || {};
-    if (!Array.isArray(selectedIds) || selectedIds.length === 0) {
-      return res.status(400).json({ error: 'Please select at least one unused selector to remove.' });
+    const {
+      selectedIds = [],
+      selectedCommentIds = [],
+      protectedPatterns = [],
+      ignoreSmallComments = true,
+      smallCommentMaxLines = 2
+    } = req.body || {};
+    if ((!Array.isArray(selectedIds) || selectedIds.length === 0) && (!Array.isArray(selectedCommentIds) || selectedCommentIds.length === 0)) {
+      return res.status(400).json({ error: 'Please select at least one unused selector or comment to remove.' });
     }
 
     const paths = getJobPaths(jobId);
     const report = await readReport(paths.reportPath);
     const allowedIds = new Set(report.entries.filter((entry) => entry.status === 'unused').map((entry) => entry.id));
+    const allowedCommentIds = new Set((report.commentEntries || []).map((entry) => entry.id));
     const invalidIds = selectedIds.filter((id) => !allowedIds.has(id));
-    if (invalidIds.length > 0) {
+    const invalidCommentIds = selectedCommentIds.filter((id) => !allowedCommentIds.has(id));
+    if (invalidIds.length > 0 || invalidCommentIds.length > 0) {
       return res.status(400).json({ error: 'One or more selectors are no longer available for removal.' });
     }
 
-    const result = await removeSelectedSelectors(paths.sourceDir, selectedIds, report, protectedPatterns);
+    const result = await removeSelectedSelectors(paths.sourceDir, selectedIds, selectedCommentIds, report, protectedPatterns, {
+      ignoreSmallComments,
+      smallCommentMaxLines
+    });
     await fs.writeFile(
       paths.manifestPath,
       JSON.stringify({
         selectedIds,
+        selectedCommentIds,
         protectedPatterns,
+        ignoreSmallComments,
+        smallCommentMaxLines,
         removedAt: new Date().toISOString()
       }, null, 2)
     );
 
     res.json({
       jobId,
-      message: result.protectedSelectorsSkipped > 0
-        ? `Selected selectors were removed directly from the uploaded workspace, and ${result.protectedSelectorsSkipped} protected selector(s) were skipped.`
-        : 'Selected selectors were removed directly from the uploaded workspace.',
+      message: `Selected selectors and comments were removed directly from the uploaded workspace.${result.protectedSelectorsSkipped > 0 ? ` ${result.protectedSelectorsSkipped} protected selector(s) were skipped.` : ''}`,
       removedSelectors: result.removedSelectors,
+      removedComments: result.removedComments,
       protectedSelectorsSkipped: result.protectedSelectorsSkipped,
       workspaceDir: result.workspaceDir
     });
@@ -331,6 +346,7 @@ app.get('/api/download/:jobId/report', async (req, res) => {
       jobId: req.params.jobId,
       report,
       selectedIds: manifest.selectedIds || [],
+      selectedCommentIds: manifest.selectedCommentIds || [],
       removedAt: manifest.removedAt,
       performance: report.performance || null
     });

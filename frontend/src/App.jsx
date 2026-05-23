@@ -354,6 +354,7 @@ export default function App() {
   const [scanWarnings, setScanWarnings] = useState([]);
   const [performanceReport, setPerformanceReport] = useState(null);
   const [reportTab, setReportTab] = useState('overview');
+  const [commentEntries, setCommentEntries] = useState([]);
   const fileHandlesRef = useRef(new Map());
   const folderInputRef = useRef(null);
   const [localFolderName, setLocalFolderName] = useState('');
@@ -364,6 +365,10 @@ export default function App() {
   const [presetName, setPresetName] = useState('');
   const [savedProtectedPresets, setSavedProtectedPresets] = useState(() => readProtectedPresets());
   const [activePresetName, setActivePresetName] = useState('');
+  const [selectedCommentIds, setSelectedCommentIds] = useState(new Set());
+  const [ignoreShortComments, setIgnoreShortComments] = useState(false);
+  const [selectorTab, setSelectorTab] = useState('css');
+  const shortCommentMaxLines = 2;
 
   const protectedPatterns = useMemo(
     () => protectedSelectors,
@@ -389,11 +394,30 @@ export default function App() {
     () => unusedEntries.filter((entry) => !selectorMatchesProtected(entry.selector, protectedPatterns)),
     [unusedEntries, protectedPatterns]
   );
+  const commentEntriesById = useMemo(
+    () => new Map(commentEntries.map((entry) => [entry.id, entry])),
+    [commentEntries]
+  );
+  const selectedCommentIdsForRemoval = useMemo(() => {
+    const ids = Array.from(selectedCommentIds);
+    if (!ignoreShortComments) return ids;
 
+    return ids.filter((id) => Number(commentEntriesById.get(id)?.lineCount || 0) > shortCommentMaxLines);
+  }, [selectedCommentIds, ignoreShortComments, commentEntriesById]);
+  const ignoredShortCommentEntries = useMemo(() => {
+    if (!ignoreShortComments) return [];
+    return commentEntries.filter((entry) => Number(entry?.lineCount || 0) > 0 && Number(entry.lineCount) <= shortCommentMaxLines);
+  }, [commentEntries, ignoreShortComments]);
+  const removableCommentEntries = useMemo(() => {
+    if (!ignoreShortComments) return commentEntries;
+    return commentEntries.filter((entry) => Number(entry?.lineCount || 0) > shortCommentMaxLines);
+  }, [commentEntries, ignoreShortComments]);
   function clearResults() {
     setSummary(initialSummary);
     setEntries([]);
     setSelectedIds(new Set());
+    setCommentEntries([]);
+    setSelectedCommentIds(new Set());
     setScanWarnings([]);
     setPerformanceReport(null);
     setReportTab('overview');
@@ -481,6 +505,18 @@ export default function App() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(savedProtectedPresets));
   }, [savedProtectedPresets]);
+
+  React.useEffect(() => {
+    if (commentEntries.length === 0) return;
+
+    setSelectedCommentIds((current) => {
+      const next = new Set(current);
+      for (const entry of commentEntries) {
+        next.add(entry.id);
+      }
+      return next;
+    });
+  }, [commentEntries]);
 
   async function uploadFiles(uploaded, { skipStrip = false } = {}) {
     const processed = skipStrip
@@ -592,6 +628,7 @@ export default function App() {
 
       setSummary(data.summary);
       setEntries(data.entries);
+      setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
       setPerformanceReport(data.performance || null);
       const selectedByDefault = new Set(
         data.entries
@@ -600,19 +637,24 @@ export default function App() {
           .map((entry) => entry.id)
       );
       setSelectedIds(selectedByDefault);
+      setSelectedCommentIds(new Set((Array.isArray(data.commentEntries) ? data.commentEntries : []).map((entry) => entry.id)));
       setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       const recommendationCount = Array.isArray(data.performance?.recommendations) ? data.performance.recommendations.length : 0;
+      const commentCount = Array.isArray(data.commentEntries) ? data.commentEntries.length : 0;
       if (data.summary.totalRules === 0) {
-        setMessage('Scan complete, but no CSS rules were found. Check that the uploaded folder contains .css files.');
+        const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
+        setMessage(`Scan complete, but no CSS rules were found. Check that the uploaded folder contains .css files.${commentText}`);
       } else if (data.summary.unusedRules === 0) {
         const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
-        setMessage(`Scan complete. No unused selectors were found in this upload.${performanceText}`);
+        const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
+        setMessage(`Scan complete. No unused selectors were found in this upload.${commentText}${performanceText}`);
       } else {
         const warningText = Array.isArray(data.warnings) && data.warnings.length > 0
           ? ` Skipped ${data.warnings.length} problematic file(s).`
           : '';
         const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
-        setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${warningText}${performanceText}`);
+        const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
+        setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${commentText}${warningText}${performanceText}`);
       }
       setReportTab(recommendationCount > 0 ? 'performance' : 'overview');
       setStep('scanned');
@@ -638,8 +680,8 @@ export default function App() {
 
   async function handleRemove() {
     if (!jobId) return;
-    if (selectedIds.size === 0) {
-      setMessage('Please select at least one unused selector first.');
+    if (selectedIds.size === 0 && selectedCommentIdsForRemoval.length === 0) {
+      setMessage('Please select at least one unused selector or comment first.');
       return;
     }
 
@@ -653,7 +695,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           selectedIds: Array.from(selectedIds),
-          protectedPatterns
+          selectedCommentIds: selectedCommentIdsForRemoval,
+          protectedPatterns,
+          ignoreSmallComments: ignoreShortComments,
+          smallCommentMaxLines: shortCommentMaxLines
         })
       });
 
@@ -665,6 +710,12 @@ export default function App() {
         : '';
       const ignoredNote = protectedPatterns.length > 0
         ? ` Ignored patterns: ${protectedPatterns.join(', ')}.`
+        : '';
+      const commentNote = data.removedComments > 0
+        ? ` ${data.removedComments} commented code block(s) were removed.`
+        : '';
+      const shortCommentNote = ignoreShortComments
+        ? ` Short comments (1-${shortCommentMaxLines} lines) were ignored.`
         : '';
 
       if (localFolderMode === 'handle') {
@@ -679,15 +730,15 @@ export default function App() {
         const { written, failed, firstError } = result;
         setMessage(
           written > 0
-            ? `Done. Removed ${data.removedSelectors} selector(s) and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
+            ? `Done. Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote} and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
             : failed > 0
-              ? `Removed ${data.removedSelectors} selector(s), but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
-              : `Removed ${data.removedSelectors} selector(s), but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+              ? `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}, but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+              : `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}, but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
         );
         setStep('applied');
       } else {
         setStep('removed');
-        setMessage(`Removed ${data.removedSelectors} selector(s). Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`);
+        setMessage(`Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}. Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`);
       }
     } catch (error) {
       setMessage(error.message);
@@ -718,8 +769,8 @@ export default function App() {
     }
   }
 
-  const hasResults = entries.length > 0;
-  const removeEnabled = selectedIds.size > 0 && !loading;
+  const hasResults = entries.length > 0 || commentEntries.length > 0;
+  const removeEnabled = (selectedIds.size > 0 || selectedCommentIdsForRemoval.length > 0) && !loading;
   const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
     ? performanceReport.recommendations
     : [];
@@ -736,7 +787,7 @@ export default function App() {
         <section className="hero">
           <div>
             <p className="eyebrow">Shopify CSS cleanup automation</p>
-            <h1>Scan, review, and safely remove unused CSS.</h1>
+            <h1>Scan , Review your theme</h1>
             <p className="subcopy">
               Upload a theme folder, CSS files, or a ZIP. The scanner checks `.liquid`, `.html`, and `.js`
               files, then protects dynamic Shopify classes from accidental deletion.
@@ -827,7 +878,7 @@ export default function App() {
 
             <div className="actions">
               <button className="primary" onClick={handleScan} disabled={!jobId || loading}>
-                {loading && step === 'scanning' ? 'Scanning...' : 'Scan CSS'}
+                {loading && step === 'scanning' ? 'Scanning...' : 'Scan'}
               </button>
               <button className="secondary" onClick={clearResults} disabled={!hasResults}>
                 Clear Results
@@ -975,7 +1026,7 @@ export default function App() {
               <p>Unused selectors are preselected. Uncheck anything you want to keep.</p>
             </div>
             <button className="primary" onClick={handleRemove} disabled={!removeEnabled}>
-              {loading && step === 'removing' ? 'Removing...' : 'Remove selected'}
+              {loading && step === 'removing' ? 'Removing...' : 'Remove selected CSS & comments'}
             </button>
           </div>
 
@@ -1053,106 +1104,258 @@ export default function App() {
             </div>
           </div>
 
+          <div className="selector-tabs" role="tablist" aria-label="Selector sections">
+            <button
+              type="button"
+              className={`selector-tab ${selectorTab === 'css' ? 'selector-tab-active' : ''}`}
+              onClick={() => setSelectorTab('css')}
+              role="tab"
+              aria-selected={selectorTab === 'css'}
+            >
+              Removable CSS
+              <span>{removableUnusedEntries.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`selector-tab ${selectorTab === 'comments' ? 'selector-tab-active' : ''}`}
+              onClick={() => setSelectorTab('comments')}
+              role="tab"
+              aria-selected={selectorTab === 'comments'}
+            >
+              Commented code
+              <span>{commentEntries.length}</span>
+            </button>
+          </div>
+
           <div className="selector-sections">
-            <section className="selector-group selector-group-unused">
-              <div className="group-head">
-                <div>
-                  <h3>Removable unused selectors</h3>
-                  <p>These are preselected for removal.</p>
-                </div>
-                <span className="group-count">{removableUnusedEntries.length}</span>
-              </div>
+            {selectorTab === 'css' ? (
+              <>
+                <section className="selector-group selector-group-unused">
+                  <div className="group-head">
+                    <div>
+                      <h3>Removable unused selectors</h3>
+                      <p>These are preselected for removal.</p>
+                    </div>
+                    <span className="group-count">{removableUnusedEntries.length}</span>
+                  </div>
 
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Remove</th>
-                      <th>Selector</th>
-                      <th>File name</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {removableUnusedEntries.length === 0 ? (
-                      <tr>
-                        <td colSpan="3" className="empty-state">
-                          No removable unused selectors found.
-                        </td>
-                      </tr>
-                    ) : (
-                      removableUnusedEntries.map((entry) => (
-                        <tr key={entry.id} className="row-unused">
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selectedIds.has(entry.id)}
-                              onChange={() => toggleSelection(entry.id)}
-                            />
-                          </td>
-                          <td className="selector-cell">{entry.selector}</td>
-                          <td>{entry.fileName}</td>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Remove</th>
+                          <th>Selector</th>
+                          <th>File name</th>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+                      </thead>
+                      <tbody>
+                        {removableUnusedEntries.length === 0 ? (
+                          <tr>
+                            <td colSpan="3" className="empty-state">
+                              No removable unused selectors found.
+                            </td>
+                          </tr>
+                        ) : (
+                          removableUnusedEntries.map((entry) => (
+                            <tr key={entry.id} className="row-unused">
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedIds.has(entry.id)}
+                                  onChange={() => toggleSelection(entry.id)}
+                                />
+                              </td>
+                              <td className="selector-cell">{entry.selector}</td>
+                              <td>{entry.fileName}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
 
-            <section className="selector-group selector-group-used">
-              <div className="group-head">
-                <div>
-                  <h3>Ignored app selectors</h3>
-                  <p>These matched your protected selectors and will not be removed.</p>
-                </div>
-                <div className="group-tools">
-                  <input
-                    className="filter-input"
-                    type="search"
-                    value={ignoredFilter}
-                    onChange={(event) => setIgnoredFilter(event.target.value)}
-                    placeholder="Filter ignored selectors"
-                  />
-                  <span className="group-count">
-                    {filteredIgnoredUnusedEntries.length}
-                    {ignoredFilter.trim() ? ` / ${ignoredUnusedEntries.length}` : ''}
-                  </span>
-                </div>
-              </div>
+                <section className="selector-group selector-group-used">
+                  <div className="group-head">
+                    <div>
+                      <h3>Ignored app selectors</h3>
+                      <p>These matched your protected selectors and will not be removed.</p>
+                    </div>
+                    <div className="group-tools">
+                      <input
+                        className="filter-input"
+                        type="search"
+                        value={ignoredFilter}
+                        onChange={(event) => setIgnoredFilter(event.target.value)}
+                        placeholder="Filter ignored selectors"
+                      />
+                      <span className="group-count">
+                        {filteredIgnoredUnusedEntries.length}
+                        {ignoredFilter.trim() ? ` / ${ignoredUnusedEntries.length}` : ''}
+                      </span>
+                    </div>
+                  </div>
 
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Selector</th>
-                      <th>File name</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredIgnoredUnusedEntries.length === 0 ? (
-                      <tr>
-                        <td colSpan="2" className="empty-state">
-                          {ignoredFilter.trim() ? 'No ignored selectors matched your filter.' : 'No protected selectors matched.'}
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredIgnoredUnusedEntries.map((entry) => (
-                        <tr key={entry.id} className="row-used">
-                          <td className="selector-cell">{entry.selector}</td>
-                          <td>{entry.fileName}</td>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Selector</th>
+                          <th>File name</th>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody>
+                        {filteredIgnoredUnusedEntries.length === 0 ? (
+                          <tr>
+                            <td colSpan="2" className="empty-state">
+                              {ignoredFilter.trim() ? 'No ignored selectors matched your filter.' : 'No protected selectors matched.'}
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredIgnoredUnusedEntries.map((entry) => (
+                            <tr key={entry.id} className="row-used">
+                              <td className="selector-cell">{entry.selector}</td>
+                              <td>{entry.fileName}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
+            ) : (
+              <div className="comment-stack">
+                <section className="selector-group selector-group-comments">
+                  <div className="group-head">
+                    <div>
+                      <h3>Commented code</h3>
+                      <p>These comments are preselected for removal. Deselect anything you want to keep.</p>
+                    </div>
+                    <div className="group-tools">
+                      <label className="inline-toggle">
+                        <input
+                          type="checkbox"
+                          checked={ignoreShortComments}
+                          onChange={(event) => setIgnoreShortComments(event.target.checked)}
+                        />
+                        <span>Ignore short comments (1-2 lines)</span>
+                      </label>
+                    <span className="group-count">{selectedCommentIdsForRemoval.length}/{removableCommentEntries.length}</span>
+                  </div>
+                </div>
+
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Remove</th>
+                          <th>File name</th>
+                          <th>Type</th>
+                          <th>Lines</th>
+                          <th>Comment preview</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {removableCommentEntries.length === 0 ? (
+                          <tr>
+                            <td colSpan="5" className="empty-state">
+                              No removable commented code found.
+                            </td>
+                          </tr>
+                        ) : (
+                          removableCommentEntries.map((entry) => (
+                            <tr key={entry.id} className="row-unused">
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedCommentIds.has(entry.id)}
+                                  onChange={() => {
+                                    setSelectedCommentIds((current) => {
+                                      const next = new Set(current);
+                                      if (next.has(entry.id)) {
+                                        next.delete(entry.id);
+                                      } else {
+                                        next.add(entry.id);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                />
+                              </td>
+                              <td>{entry.fileName}</td>
+                              <td>{entry.commentType}</td>
+                              <td>{entry.lineCount || 1}</td>
+                              <td className="selector-cell">{entry.commentPreview}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                {ignoreShortComments ? (
+                  <section className="selector-group selector-group-ignored-comments">
+                    <div className="group-head">
+                      <div>
+                        <h3>Ignored short comments</h3>
+                        <p>These 1-2 line comments were kept out of removal because the toggle is enabled.</p>
+                      </div>
+                      <span className="group-count">{ignoredShortCommentEntries.length}</span>
+                    </div>
+
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>File name</th>
+                            <th>Type</th>
+                            <th>Lines</th>
+                            <th>Comment preview</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ignoredShortCommentEntries.length === 0 ? (
+                            <tr>
+                              <td colSpan="4" className="empty-state">
+                                No short comments were ignored.
+                              </td>
+                            </tr>
+                          ) : (
+                            ignoredShortCommentEntries.map((entry) => (
+                              <tr key={entry.id} className="row-muted">
+                                <td>{entry.fileName}</td>
+                                <td>{entry.commentType}</td>
+                                <td>{entry.lineCount || 1}</td>
+                                <td className="selector-cell">{entry.commentPreview}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ) : null}
               </div>
-            </section>
+            )}
           </div>
 
           <div className="table-footer">
-            <span>{removableUnusedEntries.length} unused selector(s) preselected</span>
-            <span>{ignoredUnusedEntries.length} protected selector(s) ignored</span>
-            <span>{selectedIds.size} selected for removal</span>
+            {selectorTab === 'css' ? (
+              <>
+                <span>{removableUnusedEntries.length} unused selector(s) preselected</span>
+                <span>{ignoredUnusedEntries.length} protected selector(s) ignored</span>
+                <span>{selectedIds.size} selected for removal</span>
+              </>
+            ) : (
+              <>
+                <span>{removableCommentEntries.length} removable comment block(s)</span>
+                <span>{ignoredShortCommentEntries.length} ignored short comment(s)</span>
+                <span>{selectedCommentIdsForRemoval.length} selected for removal</span>
+                <span>{ignoreShortComments ? 'Short comments ignored' : 'All comments included'}</span>
+              </>
+            )}
           </div>
         </section>
       </main>

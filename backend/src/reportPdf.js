@@ -8,6 +8,9 @@ function escapePdfText(value) {
 
 const PDF_WIDTH = 595.28;
 const PDF_HEIGHT = 841.89;
+const MARGIN_LEFT = 36;
+const MARGIN_RIGHT = 36;
+const CONTENT_WIDTH = PDF_WIDTH - MARGIN_LEFT - MARGIN_RIGHT;
 
 function wrapText(text, maxChars) {
   const words = String(text || '').split(/\s+/).filter(Boolean);
@@ -129,36 +132,37 @@ function addMetricCard(page, x, yTop, width, height, label, value) {
   addText(page, value, x + 12, yTop + 28, { font: 'F2', size: 18, color: '1F2937' });
 }
 
-function addBullet(page, text, x, yTop, width) {
-  addText(page, '•', x, yTop, { font: 'F2', size: 11, color: '1F4B99' });
-  return addWrappedText(page, text, x + 12, yTop, width - 12, { font: 'F1', size: 10, color: '374151', lineHeight: 14 });
-}
-
-export function buildRemovalReportPdf({ jobId, report, selectedIds, removedAt, performance = null }) {
-  const selectedSet = new Set(selectedIds);
-  const removedEntries = report.entries.filter((entry) => selectedSet.has(entry.id));
+function groupByFile(entries) {
   const grouped = new Map();
-
-  for (const entry of removedEntries) {
+  for (const entry of entries) {
     if (!grouped.has(entry.filePath)) {
       grouped.set(entry.filePath, []);
     }
     grouped.get(entry.filePath).push(entry);
   }
+  return grouped;
+}
 
+function addCommentBadge(page, x, yTop, label) {
+  addRect(page, x, yTop, 88, 18, 'EAF1FB', 'C8D7EB', 1);
+  addText(page, label, x + 8, yTop + 4, { font: 'F2', size: 8.5, color: '1F4B99' });
+}
+
+export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedCommentIds = [], removedAt, performance = null }) {
+  const selectedSet = new Set(selectedIds);
+  const selectedCommentSet = new Set(selectedCommentIds);
+  const removedEntries = report.entries.filter((entry) => selectedSet.has(entry.id));
+  const removedCommentEntries = Array.isArray(report.commentEntries)
+    ? report.commentEntries.filter((entry) => selectedCommentSet.has(entry.id))
+    : [];
+  const removedCssByFile = groupByFile(removedEntries);
+  const removedCommentsByFile = groupByFile(removedCommentEntries);
   const recommendations = Array.isArray(performance?.recommendations) ? performance.recommendations : [];
   const unusedCssFiles = Array.isArray(performance?.unusedCssFiles) ? performance.unusedCssFiles : [];
 
   const pages = [createPage()];
   let pageIndex = 0;
   let cursorY = 0;
-
-  const pageWidth = 595.28;
-  const pageHeight = 841.89;
-  const marginLeft = 36;
-  const marginRight = 36;
-  const contentWidth = pageWidth - marginLeft - marginRight;
-  const bottomLimit = 36;
 
   function currentPage() {
     return pages[pageIndex];
@@ -171,7 +175,7 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, removedAt, p
   }
 
   function ensureSpace(height) {
-    if (cursorY + height > pageHeight - bottomLimit) {
+    if (cursorY + height > PDF_HEIGHT - 36) {
       newPage();
     }
   }
@@ -195,7 +199,7 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, removedAt, p
 
     let lineTop = cursorY;
     for (const line of lines) {
-      addText(currentPage(), line, opts.x || marginLeft, lineTop, {
+      addText(currentPage(), line, opts.x || MARGIN_LEFT, lineTop, {
         font: opts.font || 'F1',
         size,
         color: opts.color || '374151'
@@ -207,79 +211,96 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, removedAt, p
   }
 
   function addSummaryCards() {
-    const cardWidth = (contentWidth - 12) / 2;
+    const cardWidth = (CONTENT_WIDTH - 12) / 2;
     const cardHeight = 58;
     ensureSpace(cardHeight * 2 + 12);
 
-    addMetricCard(currentPage(), marginLeft, cursorY, cardWidth, cardHeight, 'Total rules', String(report.summary.totalRules));
-    addMetricCard(currentPage(), marginLeft + cardWidth + 12, cursorY, cardWidth, cardHeight, 'Unused rules', String(report.summary.unusedRules));
-    addMetricCard(currentPage(), marginLeft, cursorY + cardHeight + 12, cardWidth, cardHeight, 'Selected for removal', String(selectedIds.length));
-    addMetricCard(currentPage(), marginLeft + cardWidth + 12, cursorY + cardHeight + 12, cardWidth, cardHeight, 'Estimated savings', `${Math.round((report.summary.estimatedSavingsBytes || 0) / 1024)} KB`);
+    addMetricCard(currentPage(), MARGIN_LEFT, cursorY, cardWidth, cardHeight, 'Total rules', String(report.summary.totalRules));
+    addMetricCard(currentPage(), MARGIN_LEFT + cardWidth + 12, cursorY, cardWidth, cardHeight, 'Unused rules', String(report.summary.unusedRules));
+    addMetricCard(currentPage(), MARGIN_LEFT, cursorY + cardHeight + 12, cardWidth, cardHeight, 'Selected CSS', String(selectedIds.length));
+    addMetricCard(currentPage(), MARGIN_LEFT + cardWidth + 12, cursorY + cardHeight + 12, cardWidth, cardHeight, 'Selected comments', String(selectedCommentIds.length));
     consume(cardHeight * 2 + 12);
   }
 
   function addRecommendationCard(recommendation) {
     const palette = severityFill(recommendation.severity);
-    const maxWidth = contentWidth;
+    const maxWidth = CONTENT_WIDTH;
     const titleLines = wrapText(recommendation.title, 62);
     const detailLines = wrapText(recommendation.detail, 88);
     const height = 16 + titleLines.length * 14 + 8 + detailLines.length * 13 + 12;
     ensureSpace(height);
-    addRect(currentPage(), marginLeft, cursorY, maxWidth, height, palette.fill, palette.border, 1);
+    addRect(currentPage(), MARGIN_LEFT, cursorY, maxWidth, height, palette.fill, palette.border, 1);
 
     let textTop = cursorY + 12;
-    addText(currentPage(), recommendation.title, marginLeft + 12, textTop, { font: 'F2', size: 12, color: palette.text });
+    addText(currentPage(), recommendation.title, MARGIN_LEFT + 12, textTop, { font: 'F2', size: 12, color: palette.text });
     textTop += titleLines.length * 14 + 6;
-    addWrappedText(currentPage(), recommendation.detail, marginLeft + 12, textTop, maxWidth - 24, { font: 'F1', size: 10, color: '374151', lineHeight: 13 });
+    addWrappedText(currentPage(), recommendation.detail, MARGIN_LEFT + 12, textTop, maxWidth - 24, { font: 'F1', size: 10, color: '374151', lineHeight: 13 });
     consume(height + 10);
   }
 
-  function addRemovedRuleGroup(filePath, entries) {
-    const groupHeaderHeight = 28;
-    ensureSpace(groupHeaderHeight + 10);
-    addRect(currentPage(), marginLeft, cursorY, contentWidth, groupHeaderHeight, 'EAF1FB', 'C8D7EB', 1);
-    addText(currentPage(), filePath, marginLeft + 12, cursorY + 8, { font: 'F2', size: 11, color: '1F4B99' });
-    consume(groupHeaderHeight + 8);
+  function addRemovedCssGroup(filePath, entries) {
+    ensureSpace(28 + 10);
+    addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 28, 'EAF1FB', 'C8D7EB', 1);
+    addText(currentPage(), filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 11, color: '1F4B99' });
+    consume(36);
 
     for (const entry of entries) {
-      const selectorHeight = 20;
+      const selectorHeight = 18;
       const codeLines = splitCodeLines(entry.ruleText || entry.selector);
       const codeHeight = 12 + 10 + codeLines.length * 12;
-      const blockHeight = selectorHeight + codeHeight + 16;
+      const blockHeight = selectorHeight + codeHeight + 14;
       ensureSpace(blockHeight);
 
-      addText(currentPage(), entry.selector, marginLeft + 12, cursorY + 2, { font: 'F2', size: 11, color: '0F172A' });
+      addText(currentPage(), entry.selector, MARGIN_LEFT + 12, cursorY + 2, { font: 'F2', size: 11, color: '0F172A' });
       consume(selectorHeight);
-      addCodeBlock(currentPage(), entry.ruleText || entry.selector, marginLeft + 12, cursorY, contentWidth - 24);
+      addCodeBlock(currentPage(), entry.ruleText || entry.selector, MARGIN_LEFT + 12, cursorY, CONTENT_WIDTH - 24);
       consume(codeHeight + 8);
     }
   }
 
-  // First page header.
-  addRect(currentPage(), 0, 0, pageWidth, 118, '173B7A');
-  addText(currentPage(), 'Shopify CSS Cleanup Report', marginLeft, 30, { font: 'F2', size: 22, color: 'FFFFFF' });
-  addText(currentPage(), `Job ID: ${jobId}`, marginLeft, 58, { font: 'F1', size: 10, color: 'DCE7F8' });
-  addText(currentPage(), `Removed at: ${removedAt || new Date().toISOString()}`, marginLeft, 72, { font: 'F1', size: 10, color: 'DCE7F8' });
-  addText(currentPage(), `Selected selectors removed: ${selectedIds.length}`, marginLeft, 86, { font: 'F1', size: 10, color: 'DCE7F8' });
+  function addRemovedCommentGroup(filePath, entries) {
+    ensureSpace(28 + 10);
+    addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 28, 'F7F0FF', 'D7C6F7', 1);
+    addText(currentPage(), filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 11, color: '6B21A8' });
+    consume(36);
+
+    for (const entry of entries) {
+      const badgeType = String(entry.commentType || 'comment');
+      ensureSpace(18 + 18);
+
+      addCommentBadge(currentPage(), MARGIN_LEFT + 12, cursorY + 2, badgeType);
+      consume(22);
+      const codeHeight = addCodeBlock(currentPage(), entry.commentText || entry.commentPreview || '', MARGIN_LEFT + 12, cursorY, CONTENT_WIDTH - 24);
+      consume(codeHeight + 8);
+    }
+  }
+
+  // Cover/header.
+  addRect(currentPage(), 0, 0, PDF_WIDTH, 118, '173B7A');
+  addText(currentPage(), 'Shopify CSS Cleanup Report', MARGIN_LEFT, 30, { font: 'F2', size: 22, color: 'FFFFFF' });
+  addText(currentPage(), `Job ID: ${jobId}`, MARGIN_LEFT, 58, { font: 'F1', size: 10, color: 'DCE7F8' });
+  addText(currentPage(), `Removed at: ${removedAt || new Date().toISOString()}`, MARGIN_LEFT, 72, { font: 'F1', size: 10, color: 'DCE7F8' });
+  addText(currentPage(), `Selected CSS: ${selectedIds.length}  Selected comments: ${selectedCommentIds.length}`, MARGIN_LEFT, 86, { font: 'F1', size: 10, color: 'DCE7F8' });
 
   cursorY = 132;
 
-  addSectionHeader(currentPage(), 'Cleanup overview', marginLeft, cursorY, contentWidth, {
+  addSectionHeader(currentPage(), 'Cleanup overview', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
     subtitle: 'Summary of the scan, cleanup, and performance analysis'
   });
   consume(42);
   addSpacer(12);
   addSummaryCards();
-  addSpacer(14);
+  addSpacer(10);
+  addParagraph('The report includes removed CSS rules, removed comment blocks, performance recommendations, and CSS files that do not appear to be linked anywhere in the theme.', CONTENT_WIDTH, { size: 10 });
 
-  addSectionHeader(currentPage(), 'Performance recommendations', marginLeft, cursorY, contentWidth, {
+  addSpacer(10);
+  addSectionHeader(currentPage(), 'Performance recommendations', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
     subtitle: 'Shopify-focused suggestions generated from the uploaded theme'
   });
   consume(42);
   addSpacer(10);
-
   if (recommendations.length === 0) {
-    addParagraph('No performance recommendations were generated for this theme.', contentWidth, { size: 10 });
+    addParagraph('No performance recommendations were generated for this theme.', CONTENT_WIDTH, { size: 10 });
   } else {
     for (const recommendation of recommendations) {
       addRecommendationCard(recommendation);
@@ -287,43 +308,53 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, removedAt, p
   }
 
   addSpacer(6);
-  addSectionHeader(currentPage(), 'CSS files not linked anywhere', marginLeft, cursorY, contentWidth, {
+  addSectionHeader(currentPage(), 'CSS files not linked anywhere', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
     subtitle: 'Files that do not appear to be referenced in the scanned theme code'
   });
   consume(42);
   addSpacer(10);
-
   if (unusedCssFiles.length === 0) {
-    addParagraph('No completely unlinked CSS files were found.', contentWidth, { size: 10 });
+    addParagraph('No completely unlinked CSS files were found.', CONTENT_WIDTH, { size: 10 });
   } else {
     for (const file of unusedCssFiles) {
-      const lineHeight = 14;
-      const height = 34;
-      ensureSpace(height);
-      addRect(currentPage(), marginLeft, cursorY, contentWidth, height, 'F7FAFD', 'D7E0EA', 1);
-      addText(currentPage(), file.filePath, marginLeft + 12, cursorY + 8, { font: 'F2', size: 10.5, color: '1F2937' });
-      addText(currentPage(), `${Math.round((file.bytes || 0) / 1024)} KB`, marginLeft + 12, cursorY + 21, { font: 'F1', size: 9.5, color: '64748B' });
-      consume(height + 8);
+      ensureSpace(34);
+      addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 34, 'F7FAFD', 'D7E0EA', 1);
+      addText(currentPage(), file.filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 10.5, color: '1F2937' });
+      addText(currentPage(), `${Math.round((file.bytes || 0) / 1024)} KB`, MARGIN_LEFT + 12, cursorY + 21, { font: 'F1', size: 9.5, color: '64748B' });
+      consume(42);
     }
   }
 
   addSpacer(8);
-  addSectionHeader(currentPage(), 'Removed CSS rules', marginLeft, cursorY, contentWidth, {
+  addSectionHeader(currentPage(), 'Removed CSS rules', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
     subtitle: 'Each removed selector and its CSS block, grouped by source file'
   });
   consume(42);
   addSpacer(10);
-
-  if (grouped.size === 0) {
-    addParagraph('No selectors were removed.', contentWidth, { size: 10 });
+  if (removedEntries.length === 0) {
+    addParagraph('No selectors were removed.', CONTENT_WIDTH, { size: 10 });
   } else {
-    for (const [filePath, entries] of grouped.entries()) {
-      addRemovedRuleGroup(filePath, entries);
+    for (const [filePath, entries] of removedCssByFile.entries()) {
+      addRemovedCssGroup(filePath, entries);
       addSpacer(8);
     }
   }
 
-  // Render pages to PDF commands.
+  addSpacer(8);
+  addSectionHeader(currentPage(), 'Removed commented code', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
+    subtitle: 'Commented CSS, JS, Liquid, and HTML blocks removed during cleanup'
+  });
+  consume(42);
+  addSpacer(10);
+  if (removedCommentEntries.length === 0) {
+    addParagraph('No commented code blocks were removed.', CONTENT_WIDTH, { size: 10 });
+  } else {
+    for (const [filePath, entries] of removedCommentsByFile.entries()) {
+      addRemovedCommentGroup(filePath, entries);
+      addSpacer(8);
+    }
+  }
+
   const fontObject = 1;
   const boldFontObject = 2;
   const codeFontObject = 3;
@@ -347,16 +378,14 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, removedAt, p
   objects.push(`${codeFontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj`);
 
   for (const content of contentObjects) {
-    objects.push(
-      `${content.id} 0 obj << /Length ${Buffer.byteLength(content.stream, 'utf8')} >> stream\n${content.stream}\nendstream endobj`
-    );
+    objects.push(`${content.id} 0 obj << /Length ${Buffer.byteLength(content.stream, 'utf8')} >> stream\n${content.stream}\nendstream endobj`);
   }
 
   for (let index = 0; index < pages.length; index += 1) {
     const pageObjectId = pageObjects[index];
     const contentObjectId = contentObjects[index].id;
     objects.push(
-      `${pageObjectId} 0 obj << /Type /Page /Parent ${pagesObject} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontObject} 0 R /F2 ${boldFontObject} 0 R /F3 ${codeFontObject} 0 R >> >> /Contents ${contentObjectId} 0 R >> endobj`
+      `${pageObjectId} 0 obj << /Type /Page /Parent ${pagesObject} 0 R /MediaBox [0 0 ${PDF_WIDTH} ${PDF_HEIGHT}] /Resources << /Font << /F1 ${fontObject} 0 R /F2 ${boldFontObject} 0 R /F3 ${codeFontObject} 0 R >> >> /Contents ${contentObjectId} 0 R >> endobj`
     );
   }
 

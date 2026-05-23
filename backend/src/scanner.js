@@ -6,6 +6,12 @@ import selectorParser from 'postcss-selector-parser';
 
 const TEXT_EXTENSIONS = new Set(['.liquid', '.html', '.js']);
 const STYLE_BLOCK_REGEX = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+const SCRIPT_BLOCK_REGEX = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+const CSS_COMMENT_REGEX = /\/\*[\s\S]*?\*\//g;
+const JS_BLOCK_COMMENT_REGEX = /\/\*[\s\S]*?\*\//g;
+const JS_LINE_COMMENT_REGEX = /^[ \t]*\/\/.*(?:\r?\n|$)/gm;
+const HTML_COMMENT_REGEX = /<!--[\s\S]*?-->/g;
+const LIQUID_COMMENT_REGEX = /{%\s*comment\s*%}[\s\S]*?{%\s*endcomment\s*%}/gi;
 const IMG_TAG_REGEX = /<img\b[^>]*>/gi;
 const IFRAME_TAG_REGEX = /<iframe\b[^>]*>/gi;
 const LINK_STYLESHEET_REGEX = /<link\b[^>]*rel=["'][^"']*stylesheet[^"']*["'][^>]*>/gi;
@@ -178,6 +184,40 @@ function getSourceKey(relativePath, kind, index = 0) {
   return kind === 'style-block' ? `${relativePath}::style-block:${index}` : relativePath;
 }
 
+function getAssetKind(relativePath) {
+  const lowerPath = String(relativePath || '').toLowerCase();
+
+  if (lowerPath.endsWith('.css.liquid')) {
+    return 'css-liquid';
+  }
+
+  if (lowerPath.endsWith('.js.liquid')) {
+    return 'js-liquid';
+  }
+
+  if (lowerPath.endsWith('.html.liquid')) {
+    return 'html-liquid';
+  }
+
+  if (lowerPath.endsWith('.css')) {
+    return 'css';
+  }
+
+  if (lowerPath.endsWith('.js')) {
+    return 'js';
+  }
+
+  if (lowerPath.endsWith('.html')) {
+    return 'html';
+  }
+
+  if (lowerPath.endsWith('.liquid')) {
+    return 'liquid';
+  }
+
+  return 'text';
+}
+
 function extractStyleBlocks(content) {
   const blocks = [];
   let match;
@@ -196,6 +236,187 @@ function extractStyleBlocks(content) {
   }
 
   return blocks;
+}
+
+function extractScriptBlocks(content) {
+  const blocks = [];
+  let match;
+  let index = 0;
+
+  SCRIPT_BLOCK_REGEX.lastIndex = 0;
+  while ((match = SCRIPT_BLOCK_REGEX.exec(content))) {
+    blocks.push({
+      index,
+      fullMatch: match[0],
+      js: match[1],
+      start: match.index,
+      end: match.index + match[0].length
+    });
+    index += 1;
+  }
+
+  return blocks;
+}
+
+function createCommentEntry({ sourceMeta, commentType, commentText, start, end, commentIndex, lineCount }) {
+  const resolvedLineCount = Number.isFinite(lineCount) && lineCount > 0
+    ? lineCount
+    : String(commentText || '').split(/\r?\n/).length;
+  return {
+    id: `${sourceMeta.sourceKey}:comment:${commentIndex}`,
+    filePath: sourceMeta.filePath,
+    fileName: sourceMeta.fileName,
+    sourceType: 'comment',
+    commentType,
+    commentText,
+    commentPreview: String(commentText || '').replace(/\s+/g, ' ').trim().slice(0, 180),
+    lineCount: resolvedLineCount,
+    start,
+    end,
+    commentIndex,
+    sourceKey: sourceMeta.sourceKey,
+    sourceLabel: sourceMeta.sourceLabel
+  };
+}
+
+function collectLineCommentBlocks(content, sourceMeta, baseOffset = 0, startIndex = 0) {
+  const entries = [];
+  const text = String(content || '');
+  const lineRegex = /[^\r\n]*(?:\r?\n|$)/g;
+  let commentIndex = startIndex;
+  let blockStart = -1;
+  let blockEnd = -1;
+  let blockLines = 0;
+  let match;
+
+  const flushBlock = () => {
+    if (blockStart === -1 || blockEnd === -1) return;
+    const commentText = text.slice(blockStart, blockEnd);
+    entries.push(createCommentEntry({
+      sourceMeta,
+      commentType: 'js-line-comment-block',
+      commentText,
+      start: baseOffset + blockStart,
+      end: baseOffset + blockEnd,
+      commentIndex,
+      lineCount: blockLines
+    }));
+    commentIndex += 1;
+    blockStart = -1;
+    blockEnd = -1;
+    blockLines = 0;
+  };
+
+  lineRegex.lastIndex = 0;
+  while ((match = lineRegex.exec(text))) {
+    const start = match.index;
+    const end = match.index + match[0].length;
+    const lineText = match[0].replace(/\r?\n$/, '');
+    const isCommentLine = /^[ \t]*\/\/.*$/.test(lineText);
+    const isBlankLine = /^[ \t]*$/.test(lineText);
+
+    if (lineText.length === 0 && end === text.length) {
+      break;
+    }
+
+    if (isCommentLine) {
+      if (blockStart === -1) {
+        blockStart = start;
+      }
+      blockEnd = end;
+      blockLines += 1;
+      continue;
+    }
+
+    if (isBlankLine && blockStart !== -1) {
+      blockEnd = end;
+      continue;
+    }
+
+    if (blockStart !== -1) {
+      flushBlock();
+    }
+  }
+
+  flushBlock();
+  return entries;
+}
+
+function collectCommentEntriesFromText(content, sourceMeta, patterns, baseOffset = 0, startIndex = 0) {
+  const entries = [];
+  let commentIndex = startIndex;
+
+  for (const { type, regex } of patterns) {
+    regex.lastIndex = 0;
+    let match;
+    while ((match = regex.exec(content))) {
+      entries.push(createCommentEntry({
+        sourceMeta,
+        commentType: type,
+        commentText: match[0],
+        start: baseOffset + match.index,
+        end: baseOffset + match.index + match[0].length,
+        commentIndex
+      }));
+      commentIndex += 1;
+    }
+  }
+
+  return entries;
+}
+
+function isSmallCommentEntry(entry, maxLines = 2) {
+  return Number(entry?.lineCount || 0) > 0 && Number(entry.lineCount) <= maxLines;
+}
+
+function removeRangesFromText(content, ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) {
+    return content;
+  }
+
+  let next = String(content);
+  const sortedRanges = [...ranges]
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
+    .sort((a, b) => b.start - a.start || b.end - a.end);
+
+  for (const range of sortedRanges) {
+    next = `${next.slice(0, range.start)}${next.slice(range.end)}`;
+  }
+
+  return next;
+}
+
+function removeCommentEntriesFromText(content, commentEntries) {
+  if (!Array.isArray(commentEntries) || commentEntries.length === 0) {
+    return content;
+  }
+
+  let next = String(content);
+  const ranges = commentEntries.filter((entry) => Number.isFinite(entry.start) && Number.isFinite(entry.end) && entry.end > entry.start);
+  if (ranges.length > 0) {
+    next = removeRangesFromText(next, ranges);
+  }
+
+  for (const entry of commentEntries) {
+    const text = String(entry?.commentText || '');
+    if (!text) continue;
+
+    if (next.includes(text)) {
+      next = next.replace(text, '');
+      continue;
+    }
+
+    const compact = text.replace(/\s+/g, ' ').trim();
+    if (!compact) continue;
+    const normalized = next.replace(/\s+/g, ' ');
+    const index = normalized.indexOf(compact);
+    if (index !== -1) {
+      const originalSlice = next.slice(index, index + compact.length);
+      next = next.replace(originalSlice, '');
+    }
+  }
+
+  return next;
 }
 
 function hasAttribute(tag, attributeName) {
@@ -424,20 +645,88 @@ export async function scanWorkspace(sourceDir) {
   const staticParts = [];
   const dynamicParts = [];
   const tracker = createPerformanceTracker();
+  const commentEntries = [];
+  let commentIndex = 0;
 
   for (const relativePath of textFiles) {
     const absolutePath = path.join(sourceDir, relativePath);
     const content = await readText(absolutePath);
+    const assetKind = getAssetKind(relativePath);
     const ext = path.extname(relativePath).toLowerCase();
 
-    if (ext === '.liquid') {
+    if (assetKind === 'css' || assetKind === 'css-liquid') {
+      staticParts.push(stripLiquidTags(stripStyleBlocks(content)));
+      if (assetKind === 'css-liquid') {
+        dynamicParts.push(extractLiquidDynamic(content));
+      }
+    } else if (assetKind === 'js' || assetKind === 'js-liquid') {
+      staticParts.push(stripLiquidTags(content));
+      if (assetKind === 'js-liquid') {
+        dynamicParts.push(extractLiquidDynamic(content));
+      }
+    } else if (assetKind === 'html' || assetKind === 'html-liquid') {
+      staticParts.push(stripStyleBlocks(content));
+      if (assetKind === 'html-liquid') {
+        dynamicParts.push(extractLiquidDynamic(content));
+      }
+    } else if (ext === '.liquid') {
       staticParts.push(stripStyleBlocks(stripLiquidTags(content)));
       dynamicParts.push(extractLiquidDynamic(content));
     } else {
       staticParts.push(stripStyleBlocks(content));
     }
 
-    if (ext === '.liquid' || ext === '.html') {
+    if (assetKind === 'js' || assetKind === 'js-liquid') {
+      commentEntries.push(
+        ...collectLineCommentBlocks(content, {
+          filePath: relativePath,
+          fileName: path.basename(relativePath),
+          sourceType: 'js',
+          sourceKey: getSourceKey(relativePath, 'comment')
+        }, 0, commentIndex)
+      );
+      commentIndex = commentEntries.length;
+      commentEntries.push(
+        ...collectCommentEntriesFromText(content, {
+          filePath: relativePath,
+          fileName: path.basename(relativePath),
+          sourceType: 'js',
+          sourceKey: getSourceKey(relativePath, 'comment')
+        }, [
+          { type: 'js-block-comment', regex: JS_BLOCK_COMMENT_REGEX }
+        ], 0, commentIndex)
+      );
+      commentIndex = commentEntries.length;
+    }
+
+    if (assetKind === 'css' || assetKind === 'css-liquid') {
+      commentEntries.push(
+        ...collectCommentEntriesFromText(content, {
+          filePath: relativePath,
+          fileName: path.basename(relativePath),
+          sourceType: 'css',
+          sourceKey: getSourceKey(relativePath, 'comment')
+        }, [
+          { type: 'css-comment', regex: CSS_COMMENT_REGEX }
+        ], 0, commentIndex)
+      );
+      commentIndex = commentEntries.length;
+    }
+
+    if (assetKind === 'html' || assetKind === 'html-liquid' || assetKind === 'liquid') {
+      commentEntries.push(
+        ...collectCommentEntriesFromText(content, {
+          filePath: relativePath,
+          fileName: path.basename(relativePath),
+          sourceType: 'markup',
+          sourceKey: getSourceKey(relativePath, 'comment')
+        }, [
+          { type: 'html-comment', regex: HTML_COMMENT_REGEX },
+          { type: 'liquid-comment', regex: LIQUID_COMMENT_REGEX }
+        ], 0, commentIndex)
+      );
+      commentIndex = commentEntries.length;
+
       tracker.markupFileCount += 1;
       tracker.imageTags += countMatches(content, IMG_TAG_REGEX);
       tracker.iframeTags += countMatches(content, IFRAME_TAG_REGEX);
@@ -468,7 +757,10 @@ export async function scanWorkspace(sourceDir) {
   const dynamicCorpus = dynamicParts.join('\n').toLowerCase();
   const matcher = createCorpusMatcher(staticCorpus, dynamicCorpus);
 
-  const cssFiles = files.filter((file) => path.extname(file).toLowerCase() === '.css');
+  const cssFiles = files.filter((file) => {
+    const kind = getAssetKind(file);
+    return kind === 'css' || kind === 'css-liquid';
+  });
   const entries = [];
   const warnings = [];
 
@@ -476,6 +768,17 @@ export async function scanWorkspace(sourceDir) {
     const absolutePath = path.join(sourceDir, relativePath);
     try {
       const css = await readText(absolutePath);
+      commentEntries.push(
+        ...collectCommentEntriesFromText(css, {
+          filePath: relativePath,
+          fileName: path.basename(relativePath),
+          sourceType: 'css',
+          sourceKey: getSourceKey(relativePath, 'comment')
+        }, [
+          { type: 'css-comment', regex: CSS_COMMENT_REGEX }
+        ], 0, commentIndex)
+      );
+      commentIndex = commentEntries.length;
       tracker.cssFileCount += 1;
       tracker.cssBytes += Buffer.byteLength(css);
       tracker.cssFileStats.push({
@@ -501,13 +804,55 @@ export async function scanWorkspace(sourceDir) {
     }
   }
 
-  const markupFiles = files.filter((file) => ['.liquid', '.html'].includes(path.extname(file).toLowerCase()));
+  const markupFiles = files.filter((file) => {
+    const kind = getAssetKind(file);
+    return kind === 'html' || kind === 'html-liquid' || kind === 'liquid';
+  });
 
   for (const relativePath of markupFiles) {
     const absolutePath = path.join(sourceDir, relativePath);
     try {
       const content = await readText(absolutePath);
+      const scriptBlocks = extractScriptBlocks(content);
       const blocks = extractStyleBlocks(content);
+
+      for (const block of scriptBlocks) {
+        const innerOffset = block.start + block.fullMatch.indexOf(block.js);
+        commentEntries.push(
+          ...collectCommentEntriesFromText(block.js, {
+            filePath: relativePath,
+            fileName: path.basename(relativePath),
+            sourceType: 'script-block',
+            sourceKey: `${getSourceKey(relativePath, 'comment')}:script-block:${block.index}`
+          }, [
+            { type: 'js-block-comment', regex: JS_BLOCK_COMMENT_REGEX }
+          ], innerOffset, commentIndex)
+        );
+        commentEntries.push(
+          ...collectLineCommentBlocks(block.js, {
+            filePath: relativePath,
+            fileName: path.basename(relativePath),
+            sourceType: 'script-block',
+            sourceKey: `${getSourceKey(relativePath, 'comment')}:script-block:${block.index}`
+          }, innerOffset, commentIndex)
+        );
+        commentIndex = commentEntries.length;
+      }
+
+      for (const block of blocks) {
+        const innerOffset = block.start + block.fullMatch.indexOf(block.css);
+        commentEntries.push(
+          ...collectCommentEntriesFromText(block.css, {
+            filePath: relativePath,
+            fileName: path.basename(relativePath),
+            sourceType: 'style-block',
+            sourceKey: `${getSourceKey(relativePath, 'comment')}:style-block:${block.index}`
+          }, [
+            { type: 'css-comment', regex: CSS_COMMENT_REGEX }
+          ], innerOffset, commentIndex)
+        );
+        commentIndex = commentEntries.length;
+      }
 
       for (const block of blocks) {
         const sourceKey = getSourceKey(relativePath, 'style-block', block.index);
@@ -572,6 +917,7 @@ export async function scanWorkspace(sourceDir) {
       estimatedSavingsBytes
     },
     entries,
+    commentEntries,
     warnings,
     performance: {
       summary: {
@@ -615,13 +961,21 @@ export async function readReport(reportPath) {
   return JSON.parse(raw);
 }
 
-export async function removeSelectedSelectors(workspaceDir, selectedIds, report, protectedPatterns = []) {
+export async function removeSelectedSelectors(workspaceDir, selectedIds, selectedCommentIds, report, protectedPatterns = [], options = {}) {
+  const ignoreSmallComments = Boolean(options.ignoreSmallComments);
+  const smallCommentMaxLines = Number.isFinite(options.smallCommentMaxLines) ? options.smallCommentMaxLines : 2;
   const selectedSet = new Set(selectedIds);
+  const selectedCommentSet = new Set(selectedCommentIds);
   const normalizedProtectedPatterns = normalizeProtectedPatterns(protectedPatterns);
   const validIds = new Set(
     report.entries
       .filter((entry) => entry.status === 'unused')
       .map((entry) => entry.id)
+  );
+  const validCommentIds = new Set(
+    report.commentEntries
+      ? report.commentEntries.map((entry) => entry.id)
+      : []
   );
 
   for (const id of selectedSet) {
@@ -630,97 +984,62 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, report,
     }
   }
 
-  const cssFiles = await fg(['**/*.css'], {
-    cwd: workspaceDir,
-    onlyFiles: true,
-    dot: true,
-    ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
-  });
-
-  let removedSelectors = 0;
-  let protectedSelectorsSkipped = 0;
-
-  for (const relativePath of cssFiles) {
-    const inputPath = path.join(workspaceDir, relativePath);
-    const outputPath = path.join(workspaceDir, relativePath);
-    const css = await readText(inputPath);
-    const root = postcss.parse(css, { from: inputPath });
-    const entriesForFile = report.entries.filter((entry) => entry.filePath === relativePath && entry.sourceType === 'css');
-    const ruleLookup = new Map();
-
-    for (const entry of entriesForFile) {
-      if (!ruleLookup.has(entry.ruleIndex)) {
-        ruleLookup.set(entry.ruleIndex, []);
-      }
-      ruleLookup.get(entry.ruleIndex).push(entry);
+  for (const id of selectedCommentSet) {
+    if (!validCommentIds.has(id)) {
+      throw new Error(`Comment ${id} is not available for removal.`);
     }
-
-    let currentRuleIndex = 0;
-    root.walkRules((rule) => {
-      const entriesForRule = ruleLookup.get(currentRuleIndex) || [];
-      if (entriesForRule.length > 0) {
-        const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
-        const filteredSelectors = selectors.filter((selector, selectorIndex) => {
-          const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
-          if (entry && selectedSet.has(entry.id) && !selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
-            removedSelectors += 1;
-            return false;
-          }
-          if (entry && selectedSet.has(entry.id) && selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
-            protectedSelectorsSkipped += 1;
-          }
-          return true;
-        });
-
-        if (filteredSelectors.length === 0) {
-          rule.remove();
-        } else if (filteredSelectors.length !== selectors.length) {
-          rule.selector = filteredSelectors.join(', ');
-        }
-      }
-
-      currentRuleIndex += 1;
-    });
-
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await fs.writeFile(outputPath, root.toString(), 'utf8');
   }
 
-  const markupFiles = await fg(['**/*.{liquid,html}'], {
+  if (selectedSet.size === 0 && selectedCommentSet.size === 0) {
+    throw new Error('Please select at least one unused selector or comment to remove.');
+  }
+
+  const selectedComments = Array.isArray(report.commentEntries)
+    ? report.commentEntries.filter((entry) => selectedCommentSet.has(entry.id))
+    : [];
+
+  const allTextFiles = await fg(['**/*.{css,js,liquid,html}'], {
     cwd: workspaceDir,
     onlyFiles: true,
     dot: true,
     ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
   });
 
-  for (const relativePath of markupFiles) {
-    const inputPath = path.join(workspaceDir, relativePath);
-    const original = await readText(inputPath);
-    const entriesForFile = report.entries.filter(
-      (entry) => entry.filePath === relativePath && entry.sourceType === 'style-block'
-    );
-    const blockEntriesMap = new Map();
+  const commentEntriesByFile = new Map();
+  for (const entry of selectedComments) {
+    if (!commentEntriesByFile.has(entry.filePath)) {
+      commentEntriesByFile.set(entry.filePath, []);
+    }
+    commentEntriesByFile.get(entry.filePath).push(entry);
+  }
 
-    for (const entry of entriesForFile) {
-      if (!blockEntriesMap.has(entry.embeddedIndex)) {
-        blockEntriesMap.set(entry.embeddedIndex, []);
-      }
-      blockEntriesMap.get(entry.embeddedIndex).push(entry);
+  let removedSelectors = 0;
+  let removedComments = 0;
+  let protectedSelectorsSkipped = 0;
+
+  for (const relativePath of allTextFiles) {
+    const inputPath = path.join(workspaceDir, relativePath);
+    const outputPath = path.join(workspaceDir, relativePath);
+    let content = await readText(inputPath);
+    const selectedCommentRanges = (commentEntriesByFile.get(relativePath) || [])
+      .filter((entry) => !ignoreSmallComments || !isSmallCommentEntry(entry, smallCommentMaxLines));
+    if (selectedCommentRanges.length > 0) {
+      removedComments += selectedCommentRanges.length;
+      content = removeCommentEntriesFromText(content, selectedCommentRanges);
     }
 
-    let blockIndex = 0;
-    const updated = original.replace(STYLE_BLOCK_REGEX, (fullMatch, cssInner) => {
-      const entriesForBlock = blockEntriesMap.get(blockIndex) || [];
-      blockIndex += 1;
-      const hasLiquidSyntax = /({{[\s\S]*?}}|{%\s*[\s\S]*?%})/.test(cssInner);
-      if (entriesForBlock.length === 0 || hasLiquidSyntax) {
-        return fullMatch;
-      }
+    const assetKind = getAssetKind(relativePath);
+    if (assetKind === 'js' || assetKind === 'js-liquid') {
+      await fs.writeFile(outputPath, content, 'utf8');
+      continue;
+    }
 
-      const root = postcss.parse(cssInner, { from: `${inputPath}::style-block:${blockIndex}` });
+    if (assetKind === 'css' || assetKind === 'css-liquid') {
+      const root = postcss.parse(content, { from: inputPath });
+      const entriesForFile = report.entries.filter((entry) => entry.filePath === relativePath && entry.sourceType === 'css');
       const ruleLookup = new Map();
 
-      for (const entry of entriesForBlock) {
+      for (const entry of entriesForFile) {
         if (!ruleLookup.has(entry.ruleIndex)) {
           ruleLookup.set(entry.ruleIndex, []);
         }
@@ -731,18 +1050,18 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, report,
       root.walkRules((rule) => {
         const entriesForRule = ruleLookup.get(currentRuleIndex) || [];
         if (entriesForRule.length > 0) {
-        const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
-        const filteredSelectors = selectors.filter((selector, selectorIndex) => {
-          const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
-          if (entry && selectedSet.has(entry.id) && !selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
-            removedSelectors += 1;
-            return false;
-          }
-          if (entry && selectedSet.has(entry.id) && selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
-            protectedSelectorsSkipped += 1;
-          }
-          return true;
-        });
+          const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
+          const filteredSelectors = selectors.filter((selector, selectorIndex) => {
+            const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
+            if (entry && selectedSet.has(entry.id) && !selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+              removedSelectors += 1;
+              return false;
+            }
+            if (entry && selectedSet.has(entry.id) && selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+              protectedSelectorsSkipped += 1;
+            }
+            return true;
+          });
 
           if (filteredSelectors.length === 0) {
             rule.remove();
@@ -754,15 +1073,79 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, report,
         currentRuleIndex += 1;
       });
 
-      return fullMatch.replace(cssInner, root.toString());
-    });
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
+      await fs.writeFile(outputPath, root.toString(), 'utf8');
+      continue;
+    }
 
-    await fs.writeFile(inputPath, updated, 'utf8');
+    if (assetKind === 'html' || assetKind === 'html-liquid' || assetKind === 'liquid') {
+      const entriesForFile = report.entries.filter((entry) => entry.filePath === relativePath && entry.sourceType === 'style-block');
+      const blockEntriesMap = new Map();
+
+      for (const entry of entriesForFile) {
+        if (!blockEntriesMap.has(entry.embeddedIndex)) {
+          blockEntriesMap.set(entry.embeddedIndex, []);
+        }
+        blockEntriesMap.get(entry.embeddedIndex).push(entry);
+      }
+
+      let blockIndex = 0;
+      const updated = content.replace(STYLE_BLOCK_REGEX, (fullMatch, cssInner) => {
+        const entriesForBlock = blockEntriesMap.get(blockIndex) || [];
+        blockIndex += 1;
+        const hasLiquidSyntax = /({{[\s\S]*?}}|{%\s*[\s\S]*?%})/.test(cssInner);
+        if (entriesForBlock.length === 0 || hasLiquidSyntax) {
+          return fullMatch;
+        }
+
+        const root = postcss.parse(cssInner, { from: `${inputPath}::style-block:${blockIndex}` });
+        const ruleLookup = new Map();
+
+        for (const entry of entriesForBlock) {
+          if (!ruleLookup.has(entry.ruleIndex)) {
+            ruleLookup.set(entry.ruleIndex, []);
+          }
+          ruleLookup.get(entry.ruleIndex).push(entry);
+        }
+
+        let currentRuleIndex = 0;
+        root.walkRules((rule) => {
+          const entriesForRule = ruleLookup.get(currentRuleIndex) || [];
+          if (entriesForRule.length > 0) {
+            const selectors = Array.isArray(rule.selectors) ? rule.selectors : [rule.selector];
+            const filteredSelectors = selectors.filter((selector, selectorIndex) => {
+              const entry = entriesForRule.find((item) => item.selector === selector && item.selectorIndex === selectorIndex);
+              if (entry && selectedSet.has(entry.id) && !selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+                removedSelectors += 1;
+                return false;
+              }
+              if (entry && selectedSet.has(entry.id) && selectorMatchesProtected(selector, normalizedProtectedPatterns)) {
+                protectedSelectorsSkipped += 1;
+              }
+              return true;
+            });
+
+            if (filteredSelectors.length === 0) {
+              rule.remove();
+            } else if (filteredSelectors.length !== selectors.length) {
+              rule.selector = filteredSelectors.join(', ');
+            }
+          }
+
+          currentRuleIndex += 1;
+        });
+
+        return fullMatch.replace(cssInner, root.toString());
+      });
+
+      await fs.writeFile(inputPath, updated, 'utf8');
+    }
   }
 
   return {
     workspaceDir,
     removedSelectors,
+    removedComments,
     protectedSelectorsSkipped
   };
 }

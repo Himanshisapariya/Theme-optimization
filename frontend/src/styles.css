@@ -71,16 +71,16 @@ table {
 .container {
   position: relative;
   z-index: 1;
-  width: min(1180px, calc(100% - 32px));
+  width: min(1360px, calc(100% - 24px));
   margin: 0 auto;
-  padding: 40px 0 56px;
+  padding: 28px 0 48px;
 }
 
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);
   gap: 20px;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 .eyebrow {
@@ -100,7 +100,7 @@ h1 {
 
 .subcopy {
   margin: 18px 0 0;
-  max-width: 62ch;
+  max-width: 70ch;
   color: var(--muted);
   font-size: 1.02rem;
   line-height: 1.7;
@@ -184,7 +184,7 @@ h1 {
 }
 
 .panel {
-  padding: 20px;
+  padding: 18px;
 }
 
 .panel h2 {
@@ -303,6 +303,19 @@ select:focus {
 
 .group-tools {
   justify-content: flex-end;
+}
+
+.inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  user-select: none;
+}
+
+.inline-toggle input {
+  accent-color: var(--accent-strong);
 }
 
 .protected-actions {
@@ -451,6 +464,9 @@ select:focus {
   border-radius: 16px;
   border: 1px solid rgba(125, 211, 252, 0.16);
   background: rgba(56, 189, 248, 0.06);
+  max-height: min(60vh, 640px);
+  overflow-y: auto;
+  padding-right: 12px;
 }
 
 .performance-empty {
@@ -543,6 +559,7 @@ select:focus {
 
 .unused-css-panel .table-wrap {
   margin-top: 14px;
+  max-height: 260px;
 }
 
 .primary,
@@ -625,6 +642,59 @@ select:focus {
   margin-top: 16px;
 }
 
+.comment-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.selector-tabs {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 6px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.52);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.selector-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.selector-tab span {
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.16);
+  color: #a5f3fc;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.selector-tab:hover {
+  transform: translateY(-1px);
+  color: var(--text);
+}
+
+.selector-tab-active {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.18), rgba(96, 165, 250, 0.14));
+  color: var(--text);
+}
+
 .selector-group {
   display: grid;
   gap: 12px;
@@ -667,6 +737,13 @@ select:focus {
   border: 1px solid rgba(148, 163, 184, 0.12);
 }
 
+.selector-group-unused .table-wrap,
+.selector-group-used .table-wrap,
+.selector-group-comments .table-wrap,
+.selector-group-ignored-comments .table-wrap {
+  max-height: 360px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -692,6 +769,10 @@ tbody td {
 
 .row-used {
   background: rgba(52, 211, 153, 0.02);
+}
+
+.row-muted {
+  opacity: 0.58;
 }
 
 .selector-cell {
@@ -751,8 +832,8 @@ tbody td {
 
 @media (max-width: 720px) {
   .container {
-    width: min(100% - 20px, 1180px);
-    padding-top: 20px;
+    width: min(100% - 14px, 1360px);
+    padding-top: 16px;
   }
 
   .summary-grid {
@@ -763,6 +844,7 @@ tbody td {
   .table-head,
   .table-footer,
   .report-tabs,
+  .selector-tabs,
   .performance-head,
   .recommendation-top {
     flex-direction: column;

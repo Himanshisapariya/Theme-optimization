@@ -221,6 +221,7 @@ app.post('/api/remove/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
     const {
+      removeMode = 'css',
       selectedIds = [],
       selectedCommentIds = [],
       protectedPatterns = [],
@@ -233,17 +234,21 @@ app.post('/api/remove/:jobId', async (req, res) => {
       return res.status(400).json({ error: 'Please select at least one unused selector or comment to remove.' });
     }
 
+    const mode = String(removeMode || '').toLowerCase();
+    const cssSelectedIds = mode === 'comments' ? [] : selectedIds;
+    const commentSelectedIds = mode === 'css' ? [] : selectedCommentIds;
+
     const paths = getJobPaths(jobId);
     const report = await readReport(paths.reportPath);
     const allowedIds = new Set(report.entries.filter((entry) => entry.status === 'unused').map((entry) => entry.id));
     const allowedCommentIds = new Set((report.commentEntries || []).map((entry) => entry.id));
-    const invalidIds = selectedIds.filter((id) => !allowedIds.has(id));
-    const invalidCommentIds = selectedCommentIds.filter((id) => !allowedCommentIds.has(id));
+    const invalidIds = cssSelectedIds.filter((id) => !allowedIds.has(id));
+    const invalidCommentIds = commentSelectedIds.filter((id) => !allowedCommentIds.has(id));
     if (invalidIds.length > 0 || invalidCommentIds.length > 0) {
       return res.status(400).json({ error: 'One or more selectors are no longer available for removal.' });
     }
 
-    const result = await removeSelectedSelectors(paths.sourceDir, selectedIds, selectedCommentIds, report, protectedPatterns, {
+    const result = await removeSelectedSelectors(paths.sourceDir, cssSelectedIds, commentSelectedIds, report, protectedPatterns, {
       ignoreSmallComments,
       smallCommentMaxLines,
       ignoreLiquidDocComments
@@ -252,8 +257,9 @@ app.post('/api/remove/:jobId', async (req, res) => {
     await fs.writeFile(
       paths.manifestPath,
       JSON.stringify({
-        selectedIds,
-        selectedCommentIds,
+        selectedIds: cssSelectedIds,
+        selectedCommentIds: commentSelectedIds,
+        removeMode: mode,
         protectedPatterns,
         ignoreSmallComments,
         smallCommentMaxLines,

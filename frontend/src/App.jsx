@@ -698,25 +698,34 @@ export default function App() {
     });
   }
 
-  async function handleRemove() {
+  async function handleRemove(mode) {
     if (!jobId) return;
-    if (selectedIds.size === 0 && selectedCommentIdsForRemoval.length === 0 && selectedUnusedCssFiles.size === 0) {
-      setMessage('Please select at least one unused selector, comment or unlinked CSS file first.');
+
+    const selectedCssIds = mode === 'css' ? Array.from(selectedIds) : [];
+    const selectedCommentIdsToRemove = mode === 'comments' ? selectedCommentIdsForRemoval : [];
+
+    if (mode === 'css' && selectedCssIds.length === 0) {
+      setMessage('Please select at least one CSS selector to remove first.');
+      return;
+    }
+
+    if (mode === 'comments' && selectedCommentIdsToRemove.length === 0) {
+      setMessage('Please select at least one comment to remove first.');
       return;
     }
 
     setLoading(true);
     setStep('removing');
-    setMessage('Removing unused selectors...');
+    setMessage(mode === 'css' ? 'Removing selected CSS selectors...' : 'Removing selected comments...');
 
     try {
       const response = await fetch(`/api/remove/${jobId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          selectedIds: Array.from(selectedIds),
-          selectedCommentIds: selectedCommentIdsForRemoval,
-          selectedUnusedCssFiles: Array.from(selectedUnusedCssFiles),
+          removeMode: mode,
+          selectedIds: selectedCssIds,
+          selectedCommentIds: selectedCommentIdsToRemove,
           protectedPatterns,
           ignoreSmallComments: ignoreShortComments,
           smallCommentMaxLines: shortCommentMaxLines,
@@ -732,9 +741,6 @@ export default function App() {
         : '';
       const ignoredNote = protectedPatterns.length > 0
         ? ` Ignored patterns: ${protectedPatterns.join(', ')}.`
-        : '';
-      const commentNote = data.removedComments > 0
-        ? ` ${data.removedComments} commented code block(s) were removed.`
         : '';
       const shortCommentNote = ignoreShortComments
         ? ` Short comments (1-${shortCommentMaxLines} lines) were ignored.`
@@ -754,16 +760,26 @@ export default function App() {
           : { written: 0, failed: 0, firstError: '' };
         const { written, failed, firstError } = result;
         setMessage(
-          written > 0
-            ? `Done. Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote} and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
-            : failed > 0
-              ? `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote}, but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
-               : `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote}, but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+          mode === 'css'
+            ? (written > 0
+              ? `Done. Removed ${data.removedSelectors} CSS selector(s) and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
+              : failed > 0
+                ? `Removed ${data.removedSelectors} CSS selector(s), but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+                : `Removed ${data.removedSelectors} CSS selector(s), but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`)
+            : (written > 0
+              ? `Done. Removed ${data.removedComments} comment block(s) and updated ${written} file(s) directly in your folder.${shortCommentNote}${docCommentNote}`
+              : failed > 0
+                ? `Removed ${data.removedComments} comment block(s), but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${shortCommentNote}${docCommentNote}`
+                : `Removed ${data.removedComments} comment block(s), but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${shortCommentNote}${docCommentNote}`)
         );
         setStep('applied');
       } else {
         setStep('removed');
-        setMessage(`Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote}. Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`);
+        setMessage(
+          mode === 'css'
+            ? `Removed ${data.removedSelectors} CSS selector(s). Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`
+            : `Removed ${data.removedComments} comment block(s)${shortCommentNote}${docCommentNote}. Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`
+        );
       }
     } catch (error) {
       setMessage(error.message);
@@ -795,7 +811,8 @@ export default function App() {
   }
 
   const hasResults = entries.length > 0 || commentEntries.length > 0;
-  const removeEnabled = (selectedIds.size > 0 || selectedCommentIdsForRemoval.length > 0 || selectedUnusedCssFiles.size > 0) && !loading && ['scanned', 'removed', 'applied'].includes(step);
+  const cssRemoveEnabled = selectedIds.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
+  const commentRemoveEnabled = selectedCommentIdsForRemoval.length > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
     ? performanceReport.recommendations
     : [];
@@ -1066,11 +1083,8 @@ export default function App() {
           <div className="table-head">
             <div>
               <h2>Selectors</h2>
-              <p>Unused selectors are preselected. Uncheck anything you want to keep.</p>
+              <p>Use the tab-specific remove button to delete only CSS selectors or only comments.</p>
             </div>
-            <button className="primary" onClick={handleRemove} disabled={!removeEnabled}>
-              {loading && step === 'removing' ? 'Removing...' : 'Remove selected CSS & comments'}
-            </button>
           </div>
 
           <div className="protected-panel">
@@ -1179,7 +1193,16 @@ export default function App() {
                       <h3>Removable unused selectors</h3>
                       <p>These are preselected for removal.</p>
                     </div>
-                    <span className="group-count">{removableUnusedEntries.length}</span>
+                    <div className="group-tools">
+                      <span className="group-count">{removableUnusedEntries.length}</span>
+                      <button
+                        className="primary"
+                        onClick={() => handleRemove('css')}
+                        disabled={!cssRemoveEnabled}
+                      >
+                        {loading && step === 'removing' ? 'Removing...' : 'Remove selected CSS'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="table-wrap">
@@ -1292,9 +1315,16 @@ export default function App() {
                         />
                         <span>Ignore Liquid Documentation</span>
                       </label>
-                    <span className="group-count">{selectedCommentIdsForRemoval.length}/{removableCommentEntries.length}</span>
+                      <span className="group-count">{selectedCommentIdsForRemoval.length}/{removableCommentEntries.length}</span>
+                      <button
+                        className="primary"
+                        onClick={() => handleRemove('comments')}
+                        disabled={!commentRemoveEnabled}
+                      >
+                        {loading && step === 'removing' ? 'Removing...' : 'Remove selected comments'}
+                      </button>
+                    </div>
                   </div>
-                </div>
 
                   <div className="table-wrap">
                     <table>

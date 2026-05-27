@@ -370,6 +370,7 @@ export default function App() {
   const [ignoreLiquidDocComments, setIgnoreLiquidDocComments] = useState(true);
   const [selectorTab, setSelectorTab] = useState('css');
   const [selectedUnusedCssFiles, setSelectedUnusedCssFiles] = useState(new Set());
+  const [lastRemoveMode, setLastRemoveMode] = useState('');
   const shortCommentMaxLines = 2;
 
   const protectedPatterns = useMemo(
@@ -440,6 +441,7 @@ export default function App() {
     setScanWarnings([]);
     setPerformanceReport(null);
     setReportTab('overview');
+    setLastRemoveMode('');
   }
 
   function parseProtectedSelectors(text) {
@@ -719,6 +721,8 @@ export default function App() {
     setMessage(mode === 'css' ? 'Removing selected CSS selectors...' : 'Removing selected comments...');
 
     try {
+      const selectedCssIdSet = new Set(selectedCssIds);
+      const selectedCommentIdSet = new Set(selectedCommentIdsToRemove);
       const response = await fetch(`/api/remove/${jobId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -736,6 +740,7 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Removal failed.');
       setScanWarnings([]);
+      setLastRemoveMode(mode);
       const protectedNote = data.protectedSelectorsSkipped > 0
         ? ` ${data.protectedSelectorsSkipped} protected selector(s) were skipped.`
         : '';
@@ -781,6 +786,24 @@ export default function App() {
             : `Removed ${data.removedComments} comment block(s)${shortCommentNote}${docCommentNote}. Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`
         );
       }
+
+      if (mode === 'css') {
+        const removedSelectorBytes = entries
+          .filter((entry) => selectedCssIdSet.has(entry.id))
+          .reduce((sum, entry) => sum + Number(entry.estimatedBytes || 0), 0);
+
+        setEntries((current) => current.filter((entry) => !selectedCssIdSet.has(entry.id)));
+        setSelectedIds(new Set());
+        setSummary((current) => ({
+          totalRules: Math.max(0, current.totalRules - selectedCssIdSet.size),
+          usedRules: current.usedRules,
+          unusedRules: Math.max(0, current.unusedRules - selectedCssIdSet.size),
+          estimatedSavingsBytes: Math.max(0, current.estimatedSavingsBytes - removedSelectorBytes)
+        }));
+      } else {
+        setCommentEntries((current) => current.filter((entry) => !selectedCommentIdSet.has(entry.id)));
+        setSelectedCommentIds(new Set());
+      }
     } catch (error) {
       setMessage(error.message);
       setStep('scanned');
@@ -819,6 +842,7 @@ export default function App() {
   const unusedCssFiles = Array.isArray(performanceReport?.unusedCssFiles)
     ? performanceReport.unusedCssFiles
     : [];
+  const showCssPdfAction = lastRemoveMode === 'css' && ['removed', 'applied'].includes(step);
 
   return (
     <div className="app-shell">
@@ -1087,80 +1111,6 @@ export default function App() {
             </div>
           </div>
 
-          <div className="protected-panel">
-            <div className="protected-head">
-              <div>
-                <h3>Protected selectors</h3>
-                <p>Paste app classes or selector fragments to keep them out of removal, even if they look unused. Separate multiple entries with commas or new lines.</p>
-              </div>
-              <div className="protected-actions">
-                <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
-                  Ignore
-                </button>
-                <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
-                  Clear all
-                </button>
-              </div>
-            </div>
-            <textarea
-              value={protectedSelectorsText}
-              onChange={(event) => setProtectedSelectorsText(event.target.value)}
-              placeholder=".scaqv-quickadd, .omnisend"
-              rows={4}
-            />
-            <div className="preset-row">
-              <input
-                className="preset-input"
-                type="text"
-                value={presetName}
-                onChange={(event) => setPresetName(event.target.value)}
-                placeholder="Preset name, e.g. Shopify apps"
-              />
-              <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectors.length === 0}>
-                Save preset
-              </button>
-              <select
-                className="preset-select"
-                value={activePresetName}
-                onChange={(event) => loadProtectedPreset(event.target.value)}
-                disabled={savedProtectedPresets.length === 0}
-              >
-                <option value="">Load saved preset</option>
-                {savedProtectedPresets.map((preset) => (
-                  <option key={preset.name} value={preset.name}>
-                    {preset.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => deleteProtectedPreset(activePresetName)}
-                disabled={!activePresetName}
-              >
-                Delete preset
-              </button>
-            </div>
-            <div className="protected-tags">
-              {protectedSelectors.length === 0 ? (
-                <p className="empty-state">No protected selectors added yet.</p>
-              ) : (
-                protectedSelectors.map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className="protected-tag"
-                    onClick={() => removeProtectedSelector(value)}
-                    title="Click to remove"
-                  >
-                    <span>{value}</span>
-                    <span aria-hidden="true">×</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-
           <div className="selector-tabs" role="tablist" aria-label="Selector sections">
             <button
               type="button"
@@ -1187,6 +1137,80 @@ export default function App() {
           <div className="selector-sections">
             {selectorTab === 'css' ? (
               <>
+                <div className="protected-panel">
+                  <div className="protected-head">
+                    <div>
+                      <h3>Protected selectors</h3>
+                      <p>Paste app classes or selector fragments to keep them out of removal, even if they look unused. Separate multiple entries with commas or new lines.</p>
+                    </div>
+                    <div className="protected-actions">
+                      <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
+                        Ignore
+                      </button>
+                      <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
+                        Clear all
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    value={protectedSelectorsText}
+                    onChange={(event) => setProtectedSelectorsText(event.target.value)}
+                    placeholder=".scaqv-quickadd, .omnisend"
+                    rows={4}
+                  />
+                  <div className="preset-row">
+                    <input
+                      className="preset-input"
+                      type="text"
+                      value={presetName}
+                      onChange={(event) => setPresetName(event.target.value)}
+                      placeholder="Preset name, e.g. Shopify apps"
+                    />
+                    <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectors.length === 0}>
+                      Save preset
+                    </button>
+                    <select
+                      className="preset-select"
+                      value={activePresetName}
+                      onChange={(event) => loadProtectedPreset(event.target.value)}
+                      disabled={savedProtectedPresets.length === 0}
+                    >
+                      <option value="">Load saved preset</option>
+                      {savedProtectedPresets.map((preset) => (
+                        <option key={preset.name} value={preset.name}>
+                          {preset.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={() => deleteProtectedPreset(activePresetName)}
+                      disabled={!activePresetName}
+                    >
+                      Delete preset
+                    </button>
+                  </div>
+                  <div className="protected-tags">
+                    {protectedSelectors.length === 0 ? (
+                      <p className="empty-state">No protected selectors added yet.</p>
+                    ) : (
+                      protectedSelectors.map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className="protected-tag"
+                          onClick={() => removeProtectedSelector(value)}
+                          title="Click to remove"
+                        >
+                          <span>{value}</span>
+                          <span aria-hidden="true">×</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
                 <section className="selector-group selector-group-unused">
                   <div className="group-head">
                     <div>
@@ -1195,6 +1219,11 @@ export default function App() {
                     </div>
                     <div className="group-tools">
                       <span className="group-count">{removableUnusedEntries.length}</span>
+                      {showCssPdfAction ? (
+                        <button className="secondary" type="button" onClick={() => handleDownload('report')}>
+                          Download PDF report
+                        </button>
+                      ) : null}
                       <button
                         className="primary"
                         onClick={() => handleRemove('css')}

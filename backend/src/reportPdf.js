@@ -358,6 +358,7 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedComm
   const fontObject = 1;
   const boldFontObject = 2;
   const codeFontObject = 3;
+  const objectMap = new Map();
   const pageObjects = [];
   const contentObjects = [];
   let objectNumber = 4;
@@ -365,32 +366,37 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedComm
   for (const page of pages) {
     const stream = page.ops.join('\n');
     const contentObject = objectNumber++;
+    const pageObject = objectNumber++;
     contentObjects.push({ id: contentObject, stream });
-    pageObjects.push(objectNumber++);
+    pageObjects.push(pageObject);
   }
 
   const pagesObject = objectNumber++;
   const catalogObject = objectNumber++;
 
-  const objects = [];
-  objects.push(`${fontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj`);
-  objects.push(`${boldFontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj`);
-  objects.push(`${codeFontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj`);
+  objectMap.set(fontObject, `${fontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj`);
+  objectMap.set(boldFontObject, `${boldFontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj`);
+  objectMap.set(codeFontObject, `${codeFontObject} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj`);
 
   for (const content of contentObjects) {
-    objects.push(`${content.id} 0 obj << /Length ${Buffer.byteLength(content.stream, 'utf8')} >> stream\n${content.stream}\nendstream endobj`);
+    objectMap.set(content.id, `${content.id} 0 obj << /Length ${Buffer.byteLength(content.stream, 'utf8')} >> stream\n${content.stream}\nendstream endobj`);
   }
 
   for (let index = 0; index < pages.length; index += 1) {
     const pageObjectId = pageObjects[index];
     const contentObjectId = contentObjects[index].id;
-    objects.push(
+    objectMap.set(
+      pageObjectId,
       `${pageObjectId} 0 obj << /Type /Page /Parent ${pagesObject} 0 R /MediaBox [0 0 ${PDF_WIDTH} ${PDF_HEIGHT}] /Resources << /Font << /F1 ${fontObject} 0 R /F2 ${boldFontObject} 0 R /F3 ${codeFontObject} 0 R >> >> /Contents ${contentObjectId} 0 R >> endobj`
     );
   }
 
-  objects.push(`${pagesObject} 0 obj << /Type /Pages /Kids [${pageObjects.map((id) => `${id} 0 R`).join(' ')}] /Count ${pages.length} >> endobj`);
-  objects.push(`${catalogObject} 0 obj << /Type /Catalog /Pages ${pagesObject} 0 R >> endobj`);
+  objectMap.set(pagesObject, `${pagesObject} 0 obj << /Type /Pages /Kids [${pageObjects.map((id) => `${id} 0 R`).join(' ')}] /Count ${pages.length} >> endobj`);
+  objectMap.set(catalogObject, `${catalogObject} 0 obj << /Type /Catalog /Pages ${pagesObject} 0 R >> endobj`);
+
+  const objects = Array.from(objectMap.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, object]) => object);
 
   let pdf = '%PDF-1.4\n';
   const offsets = [0];

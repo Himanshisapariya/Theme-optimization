@@ -376,21 +376,43 @@ function isSmallCommentEntry(entry, maxLines = 2) {
   return Number(entry?.lineCount || 0) > 0 && Number(entry.lineCount) <= maxLines;
 }
 
-function removeRangesFromText(content, ranges) {
-  if (!Array.isArray(ranges) || ranges.length === 0) {
-    return content;
+function buildWhitespaceFlexiblePattern(text) {
+  const parts = String(text || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => escapeRegExp(part));
+
+  if (parts.length === 0) {
+    return null;
   }
 
-  let next = String(content);
-  const sortedRanges = [...ranges]
-    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
-    .sort((a, b) => b.start - a.start || b.end - a.end);
+  return new RegExp(parts.join('\\s+'));
+}
 
-  for (const range of sortedRanges) {
-    next = `${next.slice(0, range.start)}${next.slice(range.end)}`;
+function removeFirstTextMatch(content, text) {
+  const source = String(content || '');
+  const target = String(text || '');
+  if (!target) {
+    return source;
   }
 
-  return next;
+  const exactIndex = source.indexOf(target);
+  if (exactIndex !== -1) {
+    return `${source.slice(0, exactIndex)}${source.slice(exactIndex + target.length)}`;
+  }
+
+  const pattern = buildWhitespaceFlexiblePattern(target);
+  if (!pattern) {
+    return source;
+  }
+
+  const match = source.match(pattern);
+  if (!match || typeof match.index !== 'number') {
+    return source;
+  }
+
+  return `${source.slice(0, match.index)}${source.slice(match.index + match[0].length)}`;
 }
 
 function removeCommentEntriesFromText(content, commentEntries) {
@@ -399,28 +421,10 @@ function removeCommentEntriesFromText(content, commentEntries) {
   }
 
   let next = String(content);
-  const ranges = commentEntries.filter((entry) => Number.isFinite(entry.start) && Number.isFinite(entry.end) && entry.end > entry.start);
-  if (ranges.length > 0) {
-    next = removeRangesFromText(next, ranges);
-  }
-
   for (const entry of commentEntries) {
     const text = String(entry?.commentText || '');
     if (!text) continue;
-
-    if (next.includes(text)) {
-      next = next.replace(text, '');
-      continue;
-    }
-
-    const compact = text.replace(/\s+/g, ' ').trim();
-    if (!compact) continue;
-    const normalized = next.replace(/\s+/g, ' ');
-    const index = normalized.indexOf(compact);
-    if (index !== -1) {
-      const originalSlice = next.slice(index, index + compact.length);
-      next = next.replace(originalSlice, '');
-    }
+    next = removeFirstTextMatch(next, text);
   }
 
   return next;

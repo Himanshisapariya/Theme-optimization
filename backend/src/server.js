@@ -274,7 +274,8 @@ app.post('/api/remove/:jobId', async (req, res) => {
       removedSelectors: result.removedSelectors,
       removedComments: result.removedComments,
       protectedSelectorsSkipped: result.protectedSelectorsSkipped,
-      workspaceDir: result.workspaceDir
+      workspaceDir: result.workspaceDir,
+      changedFiles: result.changedFiles || []
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Removal failed.' });

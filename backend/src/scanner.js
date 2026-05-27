@@ -975,16 +975,34 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
   const selectedSet = new Set(selectedIds);
   const selectedCommentSet = new Set(selectedCommentIds);
   const normalizedProtectedPatterns = normalizeProtectedPatterns(protectedPatterns);
-  const validIds = new Set(
-    report.entries
-      .filter((entry) => entry.status === 'unused')
-      .map((entry) => entry.id)
-  );
-  const validCommentIds = new Set(
-    report.commentEntries
-      ? report.commentEntries.map((entry) => entry.id)
-      : []
-  );
+  const validIds = new Set();
+  const cssEntriesByFile = new Map();
+  const styleBlockEntriesByFile = new Map();
+  const selectedFiles = new Set();
+  const selectedCommentEntriesByFile = new Map();
+
+  for (const entry of report.entries || []) {
+    if (entry.status === 'unused') {
+      validIds.add(entry.id);
+    }
+
+    if (entry.sourceType === 'css') {
+      if (!cssEntriesByFile.has(entry.filePath)) {
+        cssEntriesByFile.set(entry.filePath, []);
+      }
+      cssEntriesByFile.get(entry.filePath).push(entry);
+    } else if (entry.sourceType === 'style-block') {
+      if (!styleBlockEntriesByFile.has(entry.filePath)) {
+        styleBlockEntriesByFile.set(entry.filePath, []);
+      }
+      styleBlockEntriesByFile.get(entry.filePath).push(entry);
+    }
+  }
+
+  const validCommentIds = new Set();
+  for (const entry of report.commentEntries || []) {
+    validCommentIds.add(entry.id);
+  }
 
   for (const id of selectedSet) {
     if (!validIds.has(id)) {
@@ -1002,34 +1020,32 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
     throw new Error('Please select at least one unused selector or comment to remove.');
   }
 
-  const selectedComments = Array.isArray(report.commentEntries)
-    ? report.commentEntries.filter((entry) => selectedCommentSet.has(entry.id))
-    : [];
-
-  const allTextFiles = await fg(['**/*.{css,js,liquid,html}'], {
-    cwd: workspaceDir,
-    onlyFiles: true,
-    dot: true,
-    ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
-  });
-
-  const commentEntriesByFile = new Map();
-  for (const entry of selectedComments) {
-    if (!commentEntriesByFile.has(entry.filePath)) {
-      commentEntriesByFile.set(entry.filePath, []);
+  for (const entry of report.entries || []) {
+    if (selectedSet.has(entry.id)) {
+      selectedFiles.add(entry.filePath);
     }
-    commentEntriesByFile.get(entry.filePath).push(entry);
+  }
+
+  for (const entry of report.commentEntries || []) {
+    if (selectedCommentSet.has(entry.id)) {
+      selectedFiles.add(entry.filePath);
+      if (!selectedCommentEntriesByFile.has(entry.filePath)) {
+        selectedCommentEntriesByFile.set(entry.filePath, []);
+      }
+      selectedCommentEntriesByFile.get(entry.filePath).push(entry);
+    }
   }
 
   let removedSelectors = 0;
   let removedComments = 0;
   let protectedSelectorsSkipped = 0;
+  const changedFiles = [];
 
-  for (const relativePath of allTextFiles) {
+  for (const relativePath of selectedFiles) {
     const inputPath = path.join(workspaceDir, relativePath);
     const outputPath = path.join(workspaceDir, relativePath);
     let content = await readText(inputPath);
-    const selectedCommentRanges = (commentEntriesByFile.get(relativePath) || [])
+    const selectedCommentRanges = (selectedCommentEntriesByFile.get(relativePath) || [])
       .filter((entry) => {
         if (ignoreLiquidDocComments && entry.isLiquidDoc) return false;
         if (ignoreSmallComments && isSmallCommentEntry(entry, smallCommentMaxLines)) return false;
@@ -1043,12 +1059,16 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
     const assetKind = getAssetKind(relativePath);
     if (assetKind === 'js' || assetKind === 'js-liquid') {
       await fs.writeFile(outputPath, content, 'utf8');
+      changedFiles.push({
+        relativePath,
+        contentBase64: Buffer.from(content, 'utf8').toString('base64')
+      });
       continue;
     }
 
     if (assetKind === 'css' || assetKind === 'css-liquid') {
       const root = postcss.parse(content, { from: inputPath });
-      const entriesForFile = report.entries.filter((entry) => entry.filePath === relativePath && entry.sourceType === 'css');
+      const entriesForFile = cssEntriesByFile.get(relativePath) || [];
       const ruleLookup = new Map();
 
       for (const entry of entriesForFile) {
@@ -1085,13 +1105,18 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
         currentRuleIndex += 1;
       });
 
+      const updatedCss = root.toString();
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
-      await fs.writeFile(outputPath, root.toString(), 'utf8');
+      await fs.writeFile(outputPath, updatedCss, 'utf8');
+      changedFiles.push({
+        relativePath,
+        contentBase64: Buffer.from(updatedCss, 'utf8').toString('base64')
+      });
       continue;
     }
 
     if (assetKind === 'html' || assetKind === 'html-liquid' || assetKind === 'liquid') {
-      const entriesForFile = report.entries.filter((entry) => entry.filePath === relativePath && entry.sourceType === 'style-block');
+      const entriesForFile = styleBlockEntriesByFile.get(relativePath) || [];
       const blockEntriesMap = new Map();
 
       for (const entry of entriesForFile) {
@@ -1151,6 +1176,10 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
       });
 
       await fs.writeFile(inputPath, updated, 'utf8');
+      changedFiles.push({
+        relativePath,
+        contentBase64: Buffer.from(updated, 'utf8').toString('base64')
+      });
     }
   }
 
@@ -1158,6 +1187,7 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
     workspaceDir,
     removedSelectors,
     removedComments,
-    protectedSelectorsSkipped
+    protectedSelectorsSkipped,
+    changedFiles
   };
 }

@@ -34,16 +34,6 @@ function filenameFromDisposition(disposition, fallback) {
   return match ? match[1] : fallback;
 }
 
-function groupEntriesByFile(entries) {
-  return entries.reduce((grouped, entry) => {
-    if (!grouped.has(entry.filePath)) {
-      grouped.set(entry.filePath, []);
-    }
-    grouped.get(entry.filePath).push(entry);
-    return grouped;
-  }, new Map());
-}
-
 function selectorMatchesProtected(selector, patterns) {
   const normalizedSelector = String(selector || '');
   if (!normalizedSelector) return false;
@@ -769,10 +759,7 @@ export default function App() {
 
       if (localFolderMode === 'handle') {
         setMessage('Writing changes directly to your folder...');
-        const exportResponse = await fetch(`/api/export/${jobId}/local`);
-        const exportData = await exportResponse.json();
-        if (!exportResponse.ok) throw new Error(exportData.error || 'Export failed.');
-        const exportFiles = exportData.files || [];
+        const exportFiles = Array.isArray(data.changedFiles) ? data.changedFiles : [];
         const result = fileHandlesRef.current.size > 0
           ? await writeFilesToHandleMap(fileHandlesRef.current, exportFiles, localFolderName)
           : { written: 0, failed: 0, firstError: '' };
@@ -883,7 +870,6 @@ export default function App() {
     : [];
   const cssReportEntries = lastCssRemoval?.removedEntries || [];
   const commentReportEntries = lastCommentRemoval?.removedEntries || [];
-  const cssReportGroups = groupEntriesByFile(cssReportEntries);
   const showCssPdfAction = cssReportEntries.length > 0 && ['removed', 'applied'].includes(step);
   const showCommentPdfAction = commentReportEntries.length > 0 && ['removed', 'applied'].includes(step);
 
@@ -1072,41 +1058,6 @@ export default function App() {
                   <button className="secondary" onClick={() => handleDownload('report-css')} disabled={cssReportEntries.length === 0}>
                     Download CSS PDF
                   </button>
-                </div>
-
-                <div className="report-entries">
-                  <div className="performance-head">
-                    <div>
-                      <h3>Removed CSS rules</h3>
-                      <p>These are the selectors removed in the last CSS cleanup, with the actual CSS blocks preserved.</p>
-                    </div>
-                    <span className="group-count">{cssReportEntries.length}</span>
-                  </div>
-                  {cssReportEntries.length === 0 ? (
-                    <p className="empty-state">No CSS cleanup report is available yet. Remove some CSS selectors first.</p>
-                  ) : (
-                    <div className="recommendation-list">
-                      {Array.from(cssReportGroups.entries()).map(([filePath, entries]) => (
-                        <article key={filePath} className="recommendation">
-                          <div className="recommendation-top">
-                            <strong>{filePath}</strong>
-                            <span>{entries.length}</span>
-                          </div>
-                          <div className="report-entry-list">
-                            {entries.map((entry) => (
-                              <div key={entry.id} className="report-entry">
-                                <div className="report-entry-head">
-                                  <strong>{entry.selector}</strong>
-                                  <span>{formatBytes(entry.fileByteSize || 0)}</span>
-                                </div>
-                                <pre className="report-code-block">{entry.ruleText || entry.selector}</pre>
-                              </div>
-                            ))}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </>
             ) : reportTab === 'comments' ? (

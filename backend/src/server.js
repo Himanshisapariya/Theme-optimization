@@ -225,8 +225,10 @@ app.post('/api/remove/:jobId', async (req, res) => {
       selectedCommentIds = [],
       protectedPatterns = [],
       ignoreSmallComments = true,
-      smallCommentMaxLines = 2
+      smallCommentMaxLines = 2,
+      ignoreLiquidDocComments = true
     } = req.body || {};
+
     if ((!Array.isArray(selectedIds) || selectedIds.length === 0) && (!Array.isArray(selectedCommentIds) || selectedCommentIds.length === 0)) {
       return res.status(400).json({ error: 'Please select at least one unused selector or comment to remove.' });
     }
@@ -243,8 +245,10 @@ app.post('/api/remove/:jobId', async (req, res) => {
 
     const result = await removeSelectedSelectors(paths.sourceDir, selectedIds, selectedCommentIds, report, protectedPatterns, {
       ignoreSmallComments,
-      smallCommentMaxLines
+      smallCommentMaxLines,
+      ignoreLiquidDocComments
     });
+
     await fs.writeFile(
       paths.manifestPath,
       JSON.stringify({
@@ -253,6 +257,7 @@ app.post('/api/remove/:jobId', async (req, res) => {
         protectedPatterns,
         ignoreSmallComments,
         smallCommentMaxLines,
+        ignoreLiquidDocComments,
         removedAt: new Date().toISOString()
       }, null, 2)
     );

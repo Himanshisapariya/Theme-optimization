@@ -19,8 +19,14 @@ const SCRIPT_SRC_REGEX = /<script\b[^>]*\bsrc=["'][^"']+["'][^>]*>/gi;
 const INLINE_STYLE_REGEX = /\sstyle=["'][^"']*["']/gi;
 const FONT_FACE_REGEX = /@font-face\b/gi;
 
+const LIQUID_DOC_COMMENT_PATTERN = /Accepts:|Usage:/i;
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isLiquidDocComment(text) {
+  return LIQUID_DOC_COMMENT_PATTERN.test(text);
 }
 
 function buildBoundaryPattern(token, caseInsensitive = false) {
@@ -275,7 +281,8 @@ function createCommentEntry({ sourceMeta, commentType, commentText, start, end, 
     end,
     commentIndex,
     sourceKey: sourceMeta.sourceKey,
-    sourceLabel: sourceMeta.sourceLabel
+    sourceLabel: sourceMeta.sourceLabel,
+    isLiquidDoc: commentType === 'liquid-comment' && isLiquidDocComment(commentText)
   };
 }
 
@@ -964,6 +971,7 @@ export async function readReport(reportPath) {
 export async function removeSelectedSelectors(workspaceDir, selectedIds, selectedCommentIds, report, protectedPatterns = [], options = {}) {
   const ignoreSmallComments = Boolean(options.ignoreSmallComments);
   const smallCommentMaxLines = Number.isFinite(options.smallCommentMaxLines) ? options.smallCommentMaxLines : 2;
+  const ignoreLiquidDocComments = Boolean(options.ignoreLiquidDocComments);
   const selectedSet = new Set(selectedIds);
   const selectedCommentSet = new Set(selectedCommentIds);
   const normalizedProtectedPatterns = normalizeProtectedPatterns(protectedPatterns);
@@ -1022,7 +1030,11 @@ export async function removeSelectedSelectors(workspaceDir, selectedIds, selecte
     const outputPath = path.join(workspaceDir, relativePath);
     let content = await readText(inputPath);
     const selectedCommentRanges = (commentEntriesByFile.get(relativePath) || [])
-      .filter((entry) => !ignoreSmallComments || !isSmallCommentEntry(entry, smallCommentMaxLines));
+      .filter((entry) => {
+        if (ignoreLiquidDocComments && entry.isLiquidDoc) return false;
+        if (ignoreSmallComments && isSmallCommentEntry(entry, smallCommentMaxLines)) return false;
+        return true;
+      });
     if (selectedCommentRanges.length > 0) {
       removedComments += selectedCommentRanges.length;
       content = removeCommentEntriesFromText(content, selectedCommentRanges);

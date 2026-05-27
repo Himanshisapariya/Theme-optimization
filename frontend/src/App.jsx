@@ -367,7 +367,9 @@ export default function App() {
   const [activePresetName, setActivePresetName] = useState('');
   const [selectedCommentIds, setSelectedCommentIds] = useState(new Set());
   const [ignoreShortComments, setIgnoreShortComments] = useState(false);
+  const [ignoreLiquidDocComments, setIgnoreLiquidDocComments] = useState(true);
   const [selectorTab, setSelectorTab] = useState('css');
+  const [selectedUnusedCssFiles, setSelectedUnusedCssFiles] = useState(new Set());
   const shortCommentMaxLines = 2;
 
   const protectedPatterns = useMemo(
@@ -400,24 +402,41 @@ export default function App() {
   );
   const selectedCommentIdsForRemoval = useMemo(() => {
     const ids = Array.from(selectedCommentIds);
-    if (!ignoreShortComments) return ids;
+    return ids.filter((id) => {
+      const entry = commentEntriesById.get(id);
+      if (!entry) return false;
+      if (ignoreLiquidDocComments && entry.isLiquidDoc) return false;
+      if (ignoreShortComments && Number(entry.lineCount || 0) <= shortCommentMaxLines) return false;
+      return true;
+    });
+  }, [selectedCommentIds, ignoreShortComments, ignoreLiquidDocComments, commentEntriesById]);
 
-    return ids.filter((id) => Number(commentEntriesById.get(id)?.lineCount || 0) > shortCommentMaxLines);
-  }, [selectedCommentIds, ignoreShortComments, commentEntriesById]);
   const ignoredShortCommentEntries = useMemo(() => {
-    if (!ignoreShortComments) return [];
-    return commentEntries.filter((entry) => Number(entry?.lineCount || 0) > 0 && Number(entry.lineCount) <= shortCommentMaxLines);
-  }, [commentEntries, ignoreShortComments]);
+    return commentEntries.filter((entry) => {
+      if (ignoreLiquidDocComments && entry.isLiquidDoc) return false;
+      return ignoreShortComments && Number(entry?.lineCount || 0) > 0 && Number(entry.lineCount) <= shortCommentMaxLines;
+    });
+  }, [commentEntries, ignoreShortComments, ignoreLiquidDocComments]);
+
+  const ignoredLiquidDocEntries = useMemo(() => {
+    if (!ignoreLiquidDocComments) return [];
+    return commentEntries.filter((entry) => entry.isLiquidDoc);
+  }, [commentEntries, ignoreLiquidDocComments]);
+
   const removableCommentEntries = useMemo(() => {
-    if (!ignoreShortComments) return commentEntries;
-    return commentEntries.filter((entry) => Number(entry?.lineCount || 0) > shortCommentMaxLines);
-  }, [commentEntries, ignoreShortComments]);
+    return commentEntries.filter((entry) => {
+      if (ignoreLiquidDocComments && entry.isLiquidDoc) return false;
+      if (ignoreShortComments && Number(entry?.lineCount || 0) <= shortCommentMaxLines) return false;
+      return true;
+    });
+  }, [commentEntries, ignoreShortComments, ignoreLiquidDocComments]);
   function clearResults() {
     setSummary(initialSummary);
     setEntries([]);
     setSelectedIds(new Set());
     setCommentEntries([]);
     setSelectedCommentIds(new Set());
+    setSelectedUnusedCssFiles(new Set());
     setScanWarnings([]);
     setPerformanceReport(null);
     setReportTab('overview');
@@ -638,6 +657,7 @@ export default function App() {
       );
       setSelectedIds(selectedByDefault);
       setSelectedCommentIds(new Set((Array.isArray(data.commentEntries) ? data.commentEntries : []).map((entry) => entry.id)));
+      setSelectedUnusedCssFiles(new Set());
       setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       const recommendationCount = Array.isArray(data.performance?.recommendations) ? data.performance.recommendations.length : 0;
       const commentCount = Array.isArray(data.commentEntries) ? data.commentEntries.length : 0;
@@ -680,8 +700,8 @@ export default function App() {
 
   async function handleRemove() {
     if (!jobId) return;
-    if (selectedIds.size === 0 && selectedCommentIdsForRemoval.length === 0) {
-      setMessage('Please select at least one unused selector or comment first.');
+    if (selectedIds.size === 0 && selectedCommentIdsForRemoval.length === 0 && selectedUnusedCssFiles.size === 0) {
+      setMessage('Please select at least one unused selector, comment or unlinked CSS file first.');
       return;
     }
 
@@ -696,9 +716,11 @@ export default function App() {
         body: JSON.stringify({
           selectedIds: Array.from(selectedIds),
           selectedCommentIds: selectedCommentIdsForRemoval,
+          selectedUnusedCssFiles: Array.from(selectedUnusedCssFiles),
           protectedPatterns,
           ignoreSmallComments: ignoreShortComments,
-          smallCommentMaxLines: shortCommentMaxLines
+          smallCommentMaxLines: shortCommentMaxLines,
+          ignoreLiquidDocComments
         })
       });
 
@@ -717,6 +739,9 @@ export default function App() {
       const shortCommentNote = ignoreShortComments
         ? ` Short comments (1-${shortCommentMaxLines} lines) were ignored.`
         : '';
+      const docCommentNote = ignoreLiquidDocComments
+        ? ' Liquid documentation comments were preserved.'
+        : '';
 
       if (localFolderMode === 'handle') {
         setMessage('Writing changes directly to your folder...');
@@ -730,15 +755,15 @@ export default function App() {
         const { written, failed, firstError } = result;
         setMessage(
           written > 0
-            ? `Done. Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote} and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
+            ? `Done. Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote} and updated ${written} file(s) directly in your folder.${protectedNote}${ignoredNote}`
             : failed > 0
-              ? `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}, but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
-              : `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}, but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+              ? `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote}, but direct write was blocked (${firstError || 'permission or browser access issue'}). Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
+               : `Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote}, but no exact file matches were found for direct writing. Use "Download updated" to save the modified files.${protectedNote}${ignoredNote}`
         );
         setStep('applied');
       } else {
         setStep('removed');
-        setMessage(`Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}. Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`);
+        setMessage(`Removed ${data.removedSelectors} selector(s)${commentNote}${shortCommentNote}${docCommentNote}. Click "Download updated" to save modified files.${protectedNote}${ignoredNote}`);
       }
     } catch (error) {
       setMessage(error.message);
@@ -770,7 +795,7 @@ export default function App() {
   }
 
   const hasResults = entries.length > 0 || commentEntries.length > 0;
-  const removeEnabled = (selectedIds.size > 0 || selectedCommentIdsForRemoval.length > 0) && !loading;
+  const removeEnabled = (selectedIds.size > 0 || selectedCommentIdsForRemoval.length > 0 || selectedUnusedCssFiles.size > 0) && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
     ? performanceReport.recommendations
     : [];
@@ -991,6 +1016,7 @@ export default function App() {
                     <table>
                       <thead>
                         <tr>
+                          <th>Remove</th>
                           <th>File</th>
                           <th>Size</th>
                         </tr>
@@ -998,13 +1024,30 @@ export default function App() {
                       <tbody>
                         {unusedCssFiles.length === 0 ? (
                           <tr>
-                            <td colSpan="2" className="empty-state">
-                              No completely unlinked CSS files were found.
+                            <td colSpan="3" className="empty-state">
+                              No unlinked CSS files found.
                             </td>
                           </tr>
                         ) : (
                           unusedCssFiles.map((file) => (
                             <tr key={file.filePath} className="row-unused">
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedUnusedCssFiles.has(file.filePath)}
+                                  onChange={() => {
+                                    setSelectedUnusedCssFiles((current) => {
+                                      const next = new Set(current);
+                                      if (next.has(file.filePath)) {
+                                        next.delete(file.filePath);
+                                      } else {
+                                        next.add(file.filePath);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                />
+                              </td>
                               <td className="selector-cell">{file.filePath}</td>
                               <td>{formatBytes(file.bytes)}</td>
                             </tr>
@@ -1241,6 +1284,14 @@ export default function App() {
                         />
                         <span>Ignore short comments (1-2 lines)</span>
                       </label>
+                      <label className="inline-toggle">
+                        <input
+                          type="checkbox"
+                          checked={ignoreLiquidDocComments}
+                          onChange={(event) => setIgnoreLiquidDocComments(event.target.checked)}
+                        />
+                        <span>Ignore Liquid Documentation</span>
+                      </label>
                     <span className="group-count">{selectedCommentIdsForRemoval.length}/{removableCommentEntries.length}</span>
                   </div>
                 </div>
@@ -1296,7 +1347,7 @@ export default function App() {
                 </section>
 
                 {ignoreShortComments ? (
-                  <section className="selector-group selector-group-ignored-comments">
+                  <section className="selector-group selector-group-ignored-comments" style={{ marginTop: 'var(--space-8)' }}>
                     <div className="group-head">
                       <div>
                         <h3>Ignored short comments</h3>
@@ -1329,6 +1380,47 @@ export default function App() {
                                 <td>{entry.commentType}</td>
                                 <td>{entry.lineCount || 1}</td>
                                 <td className="selector-cell">{entry.commentPreview}</td>
+                               </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ) : null}
+
+                {ignoreLiquidDocComments ? (
+                  <section className="selector-group selector-group-ignored-comments" style={{ marginTop: 'var(--space-8)' }}>
+                    <div className="group-head">
+                      <div>
+                        <h3>Ignored Liquid documentation</h3>
+                        <p>Snippet documentation (Accepts/Usage) is preserved to keep your codebase readable.</p>
+                      </div>
+                      <span className="group-count">{ignoredLiquidDocEntries.length}</span>
+                    </div>
+
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>File name</th>
+                            <th>Type</th>
+                            <th>Comment preview</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ignoredLiquidDocEntries.length === 0 ? (
+                            <tr>
+                              <td colSpan="3" className="empty-state">
+                                No Liquid documentation comments found.
+                              </td>
+                            </tr>
+                          ) : (
+                            ignoredLiquidDocEntries.map((entry) => (
+                              <tr key={entry.id} className="row-muted">
+                                <td>{entry.fileName}</td>
+                                <td>{entry.commentType}</td>
+                                <td className="selector-cell">{entry.commentPreview}</td>
                               </tr>
                             ))
                           )}
@@ -1352,8 +1444,10 @@ export default function App() {
               <>
                 <span>{removableCommentEntries.length} removable comment block(s)</span>
                 <span>{ignoredShortCommentEntries.length} ignored short comment(s)</span>
+                <span>{ignoredLiquidDocEntries.length} ignored doc comment(s)</span>
                 <span>{selectedCommentIdsForRemoval.length} selected for removal</span>
                 <span>{ignoreShortComments ? 'Short comments ignored' : 'All comments included'}</span>
+                <span>{ignoreLiquidDocComments ? 'Liquid documentation ignored' : 'All Liquid comments included'}</span>
               </>
             )}
           </div>

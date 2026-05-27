@@ -34,6 +34,16 @@ function filenameFromDisposition(disposition, fallback) {
   return match ? match[1] : fallback;
 }
 
+function groupEntriesByFile(entries) {
+  return entries.reduce((grouped, entry) => {
+    if (!grouped.has(entry.filePath)) {
+      grouped.set(entry.filePath, []);
+    }
+    grouped.get(entry.filePath).push(entry);
+    return grouped;
+  }, new Map());
+}
+
 function selectorMatchesProtected(selector, patterns) {
   const normalizedSelector = String(selector || '');
   if (!normalizedSelector) return false;
@@ -353,7 +363,7 @@ export default function App() {
   const [inputKey, setInputKey] = useState(0);
   const [scanWarnings, setScanWarnings] = useState([]);
   const [performanceReport, setPerformanceReport] = useState(null);
-  const [reportTab, setReportTab] = useState('overview');
+  const [reportTab, setReportTab] = useState('css');
   const [commentEntries, setCommentEntries] = useState([]);
   const fileHandlesRef = useRef(new Map());
   const folderInputRef = useRef(null);
@@ -370,7 +380,8 @@ export default function App() {
   const [ignoreLiquidDocComments, setIgnoreLiquidDocComments] = useState(true);
   const [selectorTab, setSelectorTab] = useState('css');
   const [selectedUnusedCssFiles, setSelectedUnusedCssFiles] = useState(new Set());
-  const [lastRemoveMode, setLastRemoveMode] = useState('');
+  const [lastCssRemoval, setLastCssRemoval] = useState(null);
+  const [lastCommentRemoval, setLastCommentRemoval] = useState(null);
   const shortCommentMaxLines = 2;
 
   const protectedPatterns = useMemo(
@@ -440,8 +451,9 @@ export default function App() {
     setSelectedUnusedCssFiles(new Set());
     setScanWarnings([]);
     setPerformanceReport(null);
-    setReportTab('overview');
-    setLastRemoveMode('');
+    setReportTab('css');
+    setLastCssRemoval(null);
+    setLastCommentRemoval(null);
   }
 
   function parseProtectedSelectors(text) {
@@ -651,6 +663,8 @@ export default function App() {
       setEntries(data.entries);
       setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
       setPerformanceReport(data.performance || null);
+      setLastCssRemoval(null);
+      setLastCommentRemoval(null);
       const selectedByDefault = new Set(
         data.entries
           .filter((entry) => entry.status === 'unused')
@@ -678,7 +692,7 @@ export default function App() {
         const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
         setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${commentText}${warningText}${performanceText}`);
       }
-      setReportTab(recommendationCount > 0 ? 'performance' : 'overview');
+      setReportTab(recommendationCount > 0 ? 'performance' : 'css');
       setStep('scanned');
     } catch (error) {
       setMessage(error.message);
@@ -740,7 +754,6 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Removal failed.');
       setScanWarnings([]);
-      setLastRemoveMode(mode);
       const protectedNote = data.protectedSelectorsSkipped > 0
         ? ` ${data.protectedSelectorsSkipped} protected selector(s) were skipped.`
         : '';
@@ -788,12 +801,19 @@ export default function App() {
       }
 
       if (mode === 'css') {
+        const removedCssEntries = entries.filter((entry) => selectedCssIdSet.has(entry.id));
         const removedSelectorBytes = entries
           .filter((entry) => selectedCssIdSet.has(entry.id))
           .reduce((sum, entry) => sum + Number(entry.estimatedBytes || 0), 0);
 
+        setLastCssRemoval({
+          removedAt: new Date().toISOString(),
+          selectedIds: selectedCssIds,
+          removedEntries: removedCssEntries
+        });
         setEntries((current) => current.filter((entry) => !selectedCssIdSet.has(entry.id)));
         setSelectedIds(new Set());
+        setReportTab('css');
         setSummary((current) => ({
           totalRules: Math.max(0, current.totalRules - selectedCssIdSet.size),
           usedRules: current.usedRules,
@@ -801,8 +821,15 @@ export default function App() {
           estimatedSavingsBytes: Math.max(0, current.estimatedSavingsBytes - removedSelectorBytes)
         }));
       } else {
+        const removedCommentEntries = commentEntries.filter((entry) => selectedCommentIdSet.has(entry.id));
+        setLastCommentRemoval({
+          removedAt: new Date().toISOString(),
+          selectedCommentIds: selectedCommentIdsToRemove,
+          removedEntries: removedCommentEntries
+        });
         setCommentEntries((current) => current.filter((entry) => !selectedCommentIdSet.has(entry.id)));
         setSelectedCommentIds(new Set());
+        setReportTab('comments');
       }
     } catch (error) {
       setMessage(error.message);
@@ -816,7 +843,15 @@ export default function App() {
     if (!jobId) return;
 
     try {
-      const response = await fetch(`/api/download/${jobId}/${kind}`);
+      const reportKind = kind === 'report-css'
+        ? 'css'
+        : kind === 'report-comments'
+          ? 'comments'
+          : '';
+      const url = reportKind
+        ? `/api/download/${jobId}/report?kind=${reportKind}`
+        : `/api/download/${jobId}/${kind}`;
+      const response = await fetch(url);
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || 'Download failed.');
@@ -825,7 +860,11 @@ export default function App() {
       const blob = await response.blob();
       const fallback = kind === 'optimized'
         ? `updated-${jobId}.zip`
-        : `report-${jobId}.pdf`;
+        : kind === 'report-css'
+          ? `css-report-${jobId}.pdf`
+          : kind === 'report-comments'
+            ? `comment-report-${jobId}.pdf`
+            : `report-${jobId}.pdf`;
       const filename = filenameFromDisposition(response.headers.get('content-disposition'), fallback);
       downloadBlob(blob, filename);
     } catch (error) {
@@ -842,7 +881,11 @@ export default function App() {
   const unusedCssFiles = Array.isArray(performanceReport?.unusedCssFiles)
     ? performanceReport.unusedCssFiles
     : [];
-  const showCssPdfAction = lastRemoveMode === 'css' && ['removed', 'applied'].includes(step);
+  const cssReportEntries = lastCssRemoval?.removedEntries || [];
+  const commentReportEntries = lastCommentRemoval?.removedEntries || [];
+  const cssReportGroups = groupEntriesByFile(cssReportEntries);
+  const showCssPdfAction = cssReportEntries.length > 0 && ['removed', 'applied'].includes(step);
+  const showCommentPdfAction = commentReportEntries.length > 0 && ['removed', 'applied'].includes(step);
 
   return (
     <div className="app-shell">
@@ -957,12 +1000,23 @@ export default function App() {
             <div className="report-tabs" role="tablist" aria-label="Report sections">
               <button
                 type="button"
-                className={`report-tab ${reportTab === 'overview' ? 'report-tab-active' : ''}`}
-                onClick={() => setReportTab('overview')}
+                className={`report-tab ${reportTab === 'css' ? 'report-tab-active' : ''}`}
+                onClick={() => setReportTab('css')}
                 role="tab"
-                aria-selected={reportTab === 'overview'}
+                aria-selected={reportTab === 'css'}
               >
-                Overview
+                CSS report
+                {cssReportEntries.length > 0 ? <span>{cssReportEntries.length}</span> : null}
+              </button>
+              <button
+                type="button"
+                className={`report-tab ${reportTab === 'comments' ? 'report-tab-active' : ''}`}
+                onClick={() => setReportTab('comments')}
+                role="tab"
+                aria-selected={reportTab === 'comments'}
+              >
+                Comment report
+                {commentReportEntries.length > 0 ? <span>{commentReportEntries.length}</span> : null}
               </button>
               <button
                 type="button"
@@ -976,49 +1030,111 @@ export default function App() {
               </button>
             </div>
 
-            {reportTab === 'overview' ? (
+            {reportTab === 'css' ? (
               <>
-            <div className="summary-grid">
-              <article>
-                <span>Total rules</span>
-                <strong>{summary.totalRules}</strong>
-              </article>
-              <article>
-                <span>Used</span>
-                <strong>{summary.usedRules}</strong>
-              </article>
-              <article>
-                <span>Unused</span>
-                <strong>{summary.unusedRules}</strong>
-              </article>
-              <article>
-                <span>Estimated savings</span>
-                <strong>{formatBytes(summary.estimatedSavingsBytes)}</strong>
-              </article>
-            </div>
+                <div className="summary-grid">
+                  <article>
+                    <span>Total rules</span>
+                    <strong>{summary.totalRules}</strong>
+                  </article>
+                  <article>
+                    <span>Used</span>
+                    <strong>{summary.usedRules}</strong>
+                  </article>
+                  <article>
+                    <span>Unused</span>
+                    <strong>{summary.unusedRules}</strong>
+                  </article>
+                  <article>
+                    <span>Estimated savings</span>
+                    <strong>{formatBytes(summary.estimatedSavingsBytes)}</strong>
+                  </article>
+                </div>
 
-            {scanWarnings.length > 0 ? (
-              <div className="warning-panel">
-                <h3>Scan warnings</h3>
-                <ul className="warning-list">
-                  {scanWarnings.map((warning, index) => (
-                    <li key={warning.filePath + '-' + warning.sourceType + '-' + index}>
-                      <strong>{warning.filePath}</strong>
-                      <span>{warning.message}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
+                {scanWarnings.length > 0 ? (
+                  <div className="warning-panel">
+                    <h3>Scan warnings</h3>
+                    <ul className="warning-list">
+                      {scanWarnings.map((warning, index) => (
+                        <li key={warning.filePath + '-' + warning.sourceType + '-' + index}>
+                          <strong>{warning.filePath}</strong>
+                          <span>{warning.message}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
 
-            <div className="download-actions">
-              <button className="secondary" onClick={() => handleDownload('optimized')} disabled={!(step === 'removed' || step === 'applied')}>
-                Download updated
-              </button>
-              <button className="secondary" onClick={() => handleDownload('report')} disabled={!(step === 'removed' || step === 'applied')}>
-                Download report PDF
-              </button>
-            </div>
+                <div className="download-actions">
+                  <button className="secondary" onClick={() => handleDownload('optimized')} disabled={!(step === 'removed' || step === 'applied')}>
+                    Download updated
+                  </button>
+                  <button className="secondary" onClick={() => handleDownload('report-css')} disabled={cssReportEntries.length === 0}>
+                    Download CSS PDF
+                  </button>
+                </div>
+
+                <div className="report-entries">
+                  <div className="performance-head">
+                    <div>
+                      <h3>Removed CSS rules</h3>
+                      <p>These are the selectors removed in the last CSS cleanup, with the actual CSS blocks preserved.</p>
+                    </div>
+                    <span className="group-count">{cssReportEntries.length}</span>
+                  </div>
+                  {cssReportEntries.length === 0 ? (
+                    <p className="empty-state">No CSS cleanup report is available yet. Remove some CSS selectors first.</p>
+                  ) : (
+                    <div className="recommendation-list">
+                      {Array.from(cssReportGroups.entries()).map(([filePath, entries]) => (
+                        <article key={filePath} className="recommendation">
+                          <div className="recommendation-top">
+                            <strong>{filePath}</strong>
+                            <span>{entries.length}</span>
+                          </div>
+                          <div className="report-entry-list">
+                            {entries.map((entry) => (
+                              <div key={entry.id} className="report-entry">
+                                <div className="report-entry-head">
+                                  <strong>{entry.selector}</strong>
+                                  <span>{formatBytes(entry.fileByteSize || 0)}</span>
+                                </div>
+                                <pre className="report-code-block">{entry.ruleText || entry.selector}</pre>
+                              </div>
+                            ))}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : reportTab === 'comments' ? (
+              <>
+                <div className="summary-grid">
+                  <article>
+                    <span>Comment blocks</span>
+                    <strong>{commentEntries.length + commentReportEntries.length}</strong>
+                  </article>
+                  <article>
+                    <span>Removed</span>
+                    <strong>{commentReportEntries.length}</strong>
+                  </article>
+                  <article>
+                    <span>Remaining</span>
+                    <strong>{commentEntries.length}</strong>
+                  </article>
+                  <article>
+                    <span>Selected for removal</span>
+                    <strong>{selectedCommentIdsForRemoval.length}</strong>
+                  </article>
+                </div>
+
+                <div className="download-actions">
+                  <button className="secondary" onClick={() => handleDownload('report-comments')} disabled={commentReportEntries.length === 0}>
+                    Download comments PDF
+                  </button>
+                </div>
               </>
             ) : (
               <div className="performance-panel">
@@ -1220,8 +1336,8 @@ export default function App() {
                     <div className="group-tools">
                       <span className="group-count">{removableUnusedEntries.length}</span>
                       {showCssPdfAction ? (
-                        <button className="secondary" type="button" onClick={() => handleDownload('report')}>
-                          Download PDF report
+                        <button className="secondary" type="button" onClick={() => handleDownload('report-css')}>
+                          Download CSS PDF
                         </button>
                       ) : null}
                       <button
@@ -1345,6 +1461,11 @@ export default function App() {
                         <span>Ignore Liquid Documentation</span>
                       </label>
                       <span className="group-count">{selectedCommentIdsForRemoval.length}/{removableCommentEntries.length}</span>
+                      {showCommentPdfAction ? (
+                        <button className="secondary" type="button" onClick={() => handleDownload('report-comments')}>
+                          Download comments PDF
+                        </button>
+                      ) : null}
                       <button
                         className="primary"
                         onClick={() => handleRemove('comments')}

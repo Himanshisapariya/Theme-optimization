@@ -353,16 +353,25 @@ app.get('/api/download/:jobId/report', async (req, res) => {
     const report = await readReport(paths.reportPath);
     const manifestRaw = await fs.readFile(paths.manifestPath, 'utf8');
     const manifest = JSON.parse(manifestRaw);
+    const reportKind = String(req.query.kind || 'combined').toLowerCase();
+    const selectedIds = reportKind === 'comments' ? [] : (manifest.selectedIds || []);
+    const selectedCommentIds = reportKind === 'css' ? [] : (manifest.selectedCommentIds || []);
+    const filenamePrefix = reportKind === 'comments'
+      ? 'comment-report'
+      : reportKind === 'css'
+        ? 'css-report'
+        : 'report';
     const pdfBuffer = buildRemovalReportPdf({
       jobId: req.params.jobId,
       report,
-      selectedIds: manifest.selectedIds || [],
-      selectedCommentIds: manifest.selectedCommentIds || [],
+      selectedIds,
+      selectedCommentIds,
       removedAt: manifest.removedAt,
-      performance: report.performance || null
+      performance: report.performance || null,
+      reportKind
     });
 
-    sendBufferDownload(res, pdfBuffer, 'application/pdf', `report-${req.params.jobId}.pdf`);
+    sendBufferDownload(res, pdfBuffer, 'application/pdf', `${filenamePrefix}-${req.params.jobId}.pdf`);
   } catch (error) {
     res.status(404).json({ error: 'Report not found yet. Run removal first.' });
   }

@@ -148,7 +148,18 @@ function addCommentBadge(page, x, yTop, label) {
   addText(page, label, x + 8, yTop + 4, { font: 'F2', size: 8.5, color: '1F4B99' });
 }
 
-export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedCommentIds = [], removedAt, performance = null }) {
+export function buildRemovalReportPdf({
+  jobId,
+  report,
+  selectedIds,
+  selectedCommentIds = [],
+  removedAt,
+  performance = null,
+  reportKind = 'combined'
+}) {
+  const normalizedKind = String(reportKind || 'combined').toLowerCase();
+  const includeCssSection = normalizedKind !== 'comments';
+  const includeCommentSection = normalizedKind !== 'css';
   const selectedSet = new Set(selectedIds);
   const selectedCommentSet = new Set(selectedCommentIds);
   const removedEntries = report.entries.filter((entry) => selectedSet.has(entry.id));
@@ -222,6 +233,21 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedComm
     consume(cardHeight * 2 + 12);
   }
 
+  function addCommentSummaryCards() {
+    const cardWidth = (CONTENT_WIDTH - 12) / 2;
+    const cardHeight = 58;
+    const totalComments = Array.isArray(report.commentEntries) ? report.commentEntries.length : 0;
+    const removedCommentCount = removedCommentEntries.length;
+    const remainingComments = Math.max(0, totalComments - removedCommentCount);
+    ensureSpace(cardHeight * 2 + 12);
+
+    addMetricCard(currentPage(), MARGIN_LEFT, cursorY, cardWidth, cardHeight, 'Comment blocks', String(totalComments));
+    addMetricCard(currentPage(), MARGIN_LEFT + cardWidth + 12, cursorY, cardWidth, cardHeight, 'Removed comments', String(removedCommentCount));
+    addMetricCard(currentPage(), MARGIN_LEFT, cursorY + cardHeight + 12, cardWidth, cardHeight, 'Remaining comments', String(remainingComments));
+    addMetricCard(currentPage(), MARGIN_LEFT + cardWidth + 12, cursorY + cardHeight + 12, cardWidth, cardHeight, 'Selected comments', String(selectedCommentIds.length));
+    consume(cardHeight * 2 + 12);
+  }
+
   function addRecommendationCard(recommendation) {
     const palette = severityFill(recommendation.severity);
     const maxWidth = CONTENT_WIDTH;
@@ -277,10 +303,26 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedComm
 
   // Cover/header.
   addRect(currentPage(), 0, 0, PDF_WIDTH, 118, '173B7A');
-  addText(currentPage(), 'Shopify CSS Cleanup Report', MARGIN_LEFT, 30, { font: 'F2', size: 22, color: 'FFFFFF' });
+  addText(
+    currentPage(),
+    normalizedKind === 'comments' ? 'Shopify Comment Cleanup Report' : 'Shopify CSS Cleanup Report',
+    MARGIN_LEFT,
+    30,
+    { font: 'F2', size: 22, color: 'FFFFFF' }
+  );
   addText(currentPage(), `Job ID: ${jobId}`, MARGIN_LEFT, 58, { font: 'F1', size: 10, color: 'DCE7F8' });
   addText(currentPage(), `Removed at: ${removedAt || new Date().toISOString()}`, MARGIN_LEFT, 72, { font: 'F1', size: 10, color: 'DCE7F8' });
-  addText(currentPage(), `Selected CSS: ${selectedIds.length}  Selected comments: ${selectedCommentIds.length}`, MARGIN_LEFT, 86, { font: 'F1', size: 10, color: 'DCE7F8' });
+  addText(
+    currentPage(),
+    normalizedKind === 'comments'
+      ? `Selected comments: ${selectedCommentIds.length}`
+      : normalizedKind === 'css'
+        ? `Selected CSS: ${selectedIds.length}`
+        : `Selected CSS: ${selectedIds.length}  Selected comments: ${selectedCommentIds.length}`,
+    MARGIN_LEFT,
+    86,
+    { font: 'F1', size: 10, color: 'DCE7F8' }
+  );
 
   cursorY = 132;
 
@@ -289,7 +331,11 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedComm
   });
   consume(42);
   addSpacer(12);
-  addSummaryCards();
+  if (normalizedKind === 'comments') {
+    addCommentSummaryCards();
+  } else {
+    addSummaryCards();
+  }
   addSpacer(10);
   addParagraph('The report includes removed CSS rules, removed comment blocks, performance recommendations, and CSS files that do not appear to be linked anywhere in the theme.', CONTENT_WIDTH, { size: 10 });
 
@@ -325,33 +371,37 @@ export function buildRemovalReportPdf({ jobId, report, selectedIds, selectedComm
     }
   }
 
-  addSpacer(8);
-  addSectionHeader(currentPage(), 'Removed CSS rules', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
-    subtitle: 'Each removed selector and its CSS block, grouped by source file'
-  });
-  consume(42);
-  addSpacer(10);
-  if (removedEntries.length === 0) {
-    addParagraph('No selectors were removed.', CONTENT_WIDTH, { size: 10 });
-  } else {
-    for (const [filePath, entries] of removedCssByFile.entries()) {
-      addRemovedCssGroup(filePath, entries);
-      addSpacer(8);
+  if (includeCssSection) {
+    addSpacer(8);
+    addSectionHeader(currentPage(), 'Removed CSS rules', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
+      subtitle: 'Each removed selector and its CSS block, grouped by source file'
+    });
+    consume(42);
+    addSpacer(10);
+    if (removedEntries.length === 0) {
+      addParagraph('No selectors were removed.', CONTENT_WIDTH, { size: 10 });
+    } else {
+      for (const [filePath, entries] of removedCssByFile.entries()) {
+        addRemovedCssGroup(filePath, entries);
+        addSpacer(8);
+      }
     }
   }
 
-  addSpacer(8);
-  addSectionHeader(currentPage(), 'Removed commented code', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
-    subtitle: 'Commented CSS, JS, Liquid, and HTML blocks removed during cleanup'
-  });
-  consume(42);
-  addSpacer(10);
-  if (removedCommentEntries.length === 0) {
-    addParagraph('No commented code blocks were removed.', CONTENT_WIDTH, { size: 10 });
-  } else {
-    for (const [filePath, entries] of removedCommentsByFile.entries()) {
-      addRemovedCommentGroup(filePath, entries);
-      addSpacer(8);
+  if (includeCommentSection) {
+    addSpacer(8);
+    addSectionHeader(currentPage(), 'Removed commented code', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
+      subtitle: 'Commented CSS, JS, Liquid, and HTML blocks removed during cleanup'
+    });
+    consume(42);
+    addSpacer(10);
+    if (removedCommentEntries.length === 0) {
+      addParagraph('No commented code blocks were removed.', CONTENT_WIDTH, { size: 10 });
+    } else {
+      for (const [filePath, entries] of removedCommentsByFile.entries()) {
+        addRemovedCommentGroup(filePath, entries);
+        addSpacer(8);
+      }
     }
   }
 

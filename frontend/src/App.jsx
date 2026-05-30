@@ -376,6 +376,8 @@ export default function App() {
   const [reportTab, setReportTab] = useState('css');
   const [commentEntries, setCommentEntries] = useState([]);
   const fileHandlesRef = useRef(new Map());
+  const rootDirHandleRef = useRef(null);
+  const localFilePathsRef = useRef(new Map());
   const folderInputRef = useRef(null);
   const [localFolderName, setLocalFolderName] = useState('');
   const [localFolderMode, setLocalFolderMode] = useState('none');
@@ -629,6 +631,8 @@ export default function App() {
     setLocalFolderName('');
     setLocalFolderMode('none');
     fileHandlesRef.current = new Map();
+    rootDirHandleRef.current = null;
+    localFilePathsRef.current = new Map();
     const uploaded = Array.from(event.target.files || []).map((file) => normalizeUploadItem(file));
     await uploadFiles(uploaded);
     event.target.value = '';
@@ -642,6 +646,23 @@ export default function App() {
         const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
         const uploaded = await collectFilesFromDirectoryHandle(handle);
         fileHandlesRef.current = buildHandleLookup(uploaded);
+        rootDirHandleRef.current = handle;
+
+        // Build suffix → full path map so local deletion can resolve flat server paths
+        // back to their real subdirectory locations (e.g. "foo.css" → "assets/foo.css").
+        const pathLookup = new Map();
+        for (const { relativePath } of uploaded) {
+          const normalized = normalizeRelativePath(relativePath);
+          const parts = normalized.split('/').filter(Boolean);
+          for (let i = 0; i < parts.length; i++) {
+            const suffix = parts.slice(i).join('/');
+            if (!pathLookup.has(suffix)) {
+              pathLookup.set(suffix, normalized);
+            }
+          }
+        }
+        localFilePathsRef.current = pathLookup;
+
         // skipStrip: paths from collectFilesFromDirectoryHandle are already relative to handle root
         await uploadFiles(uploaded, { skipStrip: true });
         setLocalFolderName(handle.name || 'Selected folder');
@@ -660,6 +681,8 @@ export default function App() {
     setLocalFolderName('');
     setLocalFolderMode('none');
     fileHandlesRef.current = new Map();
+    rootDirHandleRef.current = null;
+    localFilePathsRef.current = new Map();
     const uploaded = Array.from(event.target.files || []).map((file) =>
       normalizeUploadItem(file, file.webkitRelativePath || file.name)
     );
@@ -673,6 +696,8 @@ export default function App() {
     setLocalFolderName('');
     setLocalFolderMode('none');
     fileHandlesRef.current = new Map();
+    rootDirHandleRef.current = null;
+    localFilePathsRef.current = new Map();
     const uploaded = await collectDroppedFiles(event.dataTransfer);
     await uploadFiles(uploaded);
   }
@@ -878,6 +903,126 @@ export default function App() {
     }
   }
 
+  async function deleteFilesFromDirHandle(rootHandle, filePaths) {
+    console.log('[CSS-DBG] deleteFilesFromDirHandle called', { rootHandle, filePaths });
+    const canWrite = await ensureWritePermission(rootHandle);
+    console.log('[CSS-DBG] ensureWritePermission result:', canWrite);
+    if (!canWrite) {
+      return { deleted: 0, failed: filePaths.length, firstError: 'Write permission not granted for this folder' };
+    }
+
+    let deleted = 0;
+    let failed = 0;
+    let firstError = '';
+    for (const relativePath of filePaths) {
+      const parts = normalizeRelativePath(relativePath).split('/').filter(Boolean);
+      console.log('[CSS-DBG] processing path:', relativePath, '→ parts:', parts);
+      if (parts.length === 0) continue;
+      try {
+        let dirHandle = rootHandle;
+        for (let i = 0; i < parts.length - 1; i++) {
+          dirHandle = await dirHandle.getDirectoryHandle(parts[i]);
+          console.log('[CSS-DBG] navigated into dir:', parts[i], dirHandle);
+        }
+        await dirHandle.removeEntry(parts[parts.length - 1]);
+        console.log('[CSS-DBG] removeEntry SUCCESS:', parts[parts.length - 1]);
+        deleted++;
+      } catch (err) {
+        console.error('[CSS-DBG] removeEntry FAILED for', relativePath, err);
+        failed++;
+        if (!firstError) firstError = err?.message || 'Delete failed';
+      }
+    }
+    console.log('[CSS-DBG] result:', { deleted, failed, firstError });
+    return { deleted, failed, firstError };
+  }
+
+  async function handleRemoveUnlinkedFiles() {
+    if (!jobId) return;
+    const filePaths = Array.from(selectedUnusedCssFiles);
+    if (filePaths.length === 0) {
+      setMessage('Please select at least one unlinked CSS file to remove.');
+      return;
+    }
+    setLoading(true);
+    setMessage('Removing selected unlinked CSS files...');
+    try {
+      const response = await fetch(`/api/remove-files/${jobId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePaths })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'File removal failed.');
+      console.log('[CSS-DBG] server response:', data);
+      console.log('[CSS-DBG] localFolderMode:', localFolderMode, '| rootDirHandleRef:', rootDirHandleRef.current);
+      const deletedSet = new Set(data.deletedFiles);
+
+      // Prune selectors that belonged to the now-deleted CSS files so they
+      // can't be sent to /api/remove (which would fail on missing files).
+      const prunedEntries = entries.filter((e) => !deletedSet.has(e.filePath));
+      const prunedIds = new Set(entries.filter((e) => deletedSet.has(e.filePath)).map((e) => e.id));
+      const deletedUnusedBytes = entries
+        .filter((e) => deletedSet.has(e.filePath) && e.status === 'unused')
+        .reduce((sum, e) => sum + Number(e.estimatedBytes || 0), 0);
+      const deletedUnusedCount = entries.filter((e) => deletedSet.has(e.filePath) && e.status === 'unused').length;
+      const deletedUsedCount = entries.filter((e) => deletedSet.has(e.filePath) && e.status === 'used').length;
+      const prunedCommentEntries = commentEntries.filter((e) => !deletedSet.has(e.filePath));
+      const prunedCommentIds = new Set(commentEntries.filter((e) => deletedSet.has(e.filePath)).map((e) => e.id));
+      setEntries(prunedEntries);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        for (const id of prunedIds) next.delete(id);
+        return next;
+      });
+      setCommentEntries(prunedCommentEntries);
+      setSelectedCommentIds((current) => {
+        const next = new Set(current);
+        for (const id of prunedCommentIds) next.delete(id);
+        return next;
+      });
+      setSummary((current) => ({
+        totalRules: Math.max(0, current.totalRules - deletedUnusedCount - deletedUsedCount),
+        usedRules: Math.max(0, current.usedRules - deletedUsedCount),
+        unusedRules: Math.max(0, current.unusedRules - deletedUnusedCount),
+        estimatedSavingsBytes: Math.max(0, current.estimatedSavingsBytes - deletedUnusedBytes)
+      }));
+
+      if (localFolderMode === 'handle' && rootDirHandleRef.current) {
+        setMessage('Deleting files from your local folder...');
+        const localPaths = data.deletedFiles.map(
+          (serverPath) => localFilePathsRef.current.get(serverPath) || serverPath
+        );
+        console.log('[CSS-DBG] server paths → local paths:', data.deletedFiles, '→', localPaths);
+        const result = await deleteFilesFromDirHandle(rootDirHandleRef.current, localPaths);
+        console.log('[CSS-DBG] deleteFilesFromDirHandle result:', result);
+        if (result.deleted > 0) {
+          setMessage(`Deleted ${data.count} unlinked CSS file(s) directly from your folder.`);
+        } else if (result.failed > 0) {
+          setMessage(`Removed ${data.count} file(s) from workspace, but local deletion was blocked (${result.firstError || 'permission issue'}). Use "Download updated" to save changes.`);
+        } else {
+          setMessage(`Removed ${data.count} unlinked CSS file(s) from workspace.`);
+        }
+        setStep('applied');
+      } else {
+        setMessage(`Removed ${data.count} unlinked CSS file(s). Click "Download updated" to save the updated workspace.`);
+        setStep('removed');
+      }
+      setSelectedUnusedCssFiles(new Set());
+      setPerformanceReport((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          unusedCssFiles: (current.unusedCssFiles || []).filter((f) => !deletedSet.has(f.filePath))
+        };
+      });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleDownload(kind) {
     if (!jobId) return;
 
@@ -914,6 +1059,7 @@ export default function App() {
   const hasResults = entries.length > 0 || commentEntries.length > 0;
   const cssRemoveEnabled = selectedIdsForRemoval.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const commentRemoveEnabled = selectedCommentIdsForRemoval.length > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
+  const unlinkedFilesRemoveEnabled = selectedUnusedCssFiles.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
     ? performanceReport.recommendations
     : [];
@@ -1162,18 +1308,38 @@ export default function App() {
                 )}
 
                 <div className="unused-css-panel">
-                  <div className="performance-head">
+                  <div className="group-head">
                     <div>
                       <h3>CSS files not linked anywhere</h3>
-                      <p>These stylesheet files do not appear to be referenced by the scanned theme files, so they are likely safe to review for removal.</p>
+                      <p>These stylesheet files do not appear to be referenced by the scanned theme files. Select files to delete them from the workspace.</p>
                     </div>
-                    <span className="group-count">{unusedCssFiles.length}</span>
+                    <div className="group-tools">
+                      <span className="group-count">{selectedUnusedCssFiles.size}/{unusedCssFiles.length}</span>
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={handleRemoveUnlinkedFiles}
+                        disabled={!unlinkedFilesRemoveEnabled}
+                      >
+                        {loading ? 'Removing...' : 'Remove selected files'}
+                      </button>
+                    </div>
                   </div>
                   <div className="table-wrap">
                     <table>
                       <thead>
                         <tr>
-                          <th>Remove</th>
+                          <th>
+                            <input
+                              type="checkbox"
+                              checked={unusedCssFiles.length > 0 && unusedCssFiles.every((f) => selectedUnusedCssFiles.has(f.filePath))}
+                              onChange={() => {
+                                const allPaths = unusedCssFiles.map((f) => f.filePath);
+                                const allSelected = allPaths.length > 0 && allPaths.every((p) => selectedUnusedCssFiles.has(p));
+                                setSelectedUnusedCssFiles(allSelected ? new Set() : new Set(allPaths));
+                              }}
+                            />
+                          </th>
                           <th>File</th>
                           <th>Size</th>
                         </tr>

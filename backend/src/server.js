@@ -282,6 +282,57 @@ app.post('/api/remove/:jobId', async (req, res) => {
   }
 });
 
+app.post('/api/remove-files/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { filePaths = [] } = req.body || {};
+
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one file to remove.' });
+    }
+
+    const paths = getJobPaths(jobId);
+    const report = await readReport(paths.reportPath);
+    const unusedCssFiles = Array.isArray(report.performance?.unusedCssFiles)
+      ? report.performance.unusedCssFiles
+      : [];
+    const allowedPaths = new Set(unusedCssFiles.map((f) => f.filePath));
+    const invalidPaths = filePaths.filter((p) => !allowedPaths.has(p));
+
+    if (invalidPaths.length > 0) {
+      return res.status(400).json({ error: 'One or more files are not in the unlinked CSS files list.' });
+    }
+
+    const deletedFiles = [];
+    for (const relativePath of filePaths) {
+      const safePath = safeRelativePath(relativePath);
+      const absolutePath = path.join(paths.sourceDir, safePath);
+      try {
+        await fs.unlink(absolutePath);
+        deletedFiles.push(relativePath);
+      } catch {
+        // file already gone — skip silently
+      }
+    }
+
+    if (deletedFiles.length > 0) {
+      const deletedSet = new Set(deletedFiles);
+      report.entries = (report.entries || []).filter((e) => !deletedSet.has(e.filePath));
+      report.commentEntries = (report.commentEntries || []).filter((e) => !deletedSet.has(e.filePath));
+      if (report.performance?.unusedCssFiles) {
+        report.performance.unusedCssFiles = report.performance.unusedCssFiles.filter(
+          (f) => !deletedSet.has(f.filePath)
+        );
+      }
+      await writeReport(paths.reportPath, report);
+    }
+
+    res.json({ jobId, deletedFiles, count: deletedFiles.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'File removal failed.' });
+  }
+});
+
 app.post('/api/apply/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;

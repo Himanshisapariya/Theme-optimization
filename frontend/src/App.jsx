@@ -1216,14 +1216,14 @@ export default function App() {
                 <div className="summary-grid">
                   <article>
                     <span>Total rules</span>
-                    <strong>{summary.totalRules}</strong>
+                    <strong>{summary.totalRules + cssReportEntries.length}</strong>
                   </article>
                   <article>
-                    <span>Used</span>
-                    <strong>{summary.usedRules}</strong>
+                    <span>Removed</span>
+                    <strong>{cssReportEntries.length}</strong>
                   </article>
                   <article>
-                    <span>Unused</span>
+                    <span>Remaining unused</span>
                     <strong>{summary.unusedRules}</strong>
                   </article>
                   <article>

@@ -927,9 +927,6 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
-
       <main className="container">
         <section className="hero">
           <div>

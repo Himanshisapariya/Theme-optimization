@@ -83,6 +83,16 @@ function readProtectedPresets() {
   }
 }
 
+function normalizeProtectedSelectors(values) {
+  if (!Array.isArray(values)) return [];
+
+  return [...new Set(
+    values
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+}
+
 const IGNORED_UPLOAD_BASENAMES = new Set([
   '.DS_Store',
   'Thumbs.db',
@@ -408,6 +418,10 @@ export default function App() {
     () => unusedEntries.filter((entry) => !selectorMatchesProtected(entry.selector, protectedPatterns)),
     [unusedEntries, protectedPatterns]
   );
+  const selectedIdsForRemoval = useMemo(() => {
+    const protectedIds = new Set(ignoredUnusedEntries.map((entry) => entry.id));
+    return new Set(Array.from(selectedIds).filter((id) => !protectedIds.has(id)));
+  }, [selectedIds, ignoredUnusedEntries]);
   const commentEntriesById = useMemo(
     () => new Map(commentEntries.map((entry) => [entry.id, entry])),
     [commentEntries]
@@ -442,6 +456,10 @@ export default function App() {
       return true;
     });
   }, [commentEntries, ignoreShortComments, ignoreLiquidDocComments]);
+  const protectedSelectorDraft = useMemo(
+    () => normalizeProtectedSelectors([...protectedSelectors, ...parseProtectedSelectors(protectedSelectorsText)]),
+    [protectedSelectors, protectedSelectorsText]
+  );
   function clearResults() {
     setSummary(initialSummary);
     setEntries([]);
@@ -467,7 +485,7 @@ export default function App() {
     const nextValues = parseProtectedSelectors(protectedSelectorsText);
     if (nextValues.length === 0) return;
 
-    setProtectedSelectors((current) => [...new Set([...current, ...nextValues])]);
+    setProtectedSelectors((current) => normalizeProtectedSelectors([...current, ...nextValues]));
     setProtectedSelectorsText('');
   }
 
@@ -483,11 +501,14 @@ export default function App() {
 
   function saveProtectedPreset() {
     const name = presetName.trim();
-    if (!name || protectedSelectors.length === 0) return;
+    const nextProtectedSelectors = protectedSelectorDraft;
+    if (!name || nextProtectedSelectors.length === 0) return;
 
+    setProtectedSelectors(nextProtectedSelectors);
+    setProtectedSelectorsText('');
     setSavedProtectedPresets((current) => {
       const next = [
-        { name, patterns: [...protectedSelectors] },
+        { name, patterns: [...nextProtectedSelectors] },
         ...current.filter((preset) => preset.name !== name)
       ];
       if (typeof window !== 'undefined') {
@@ -533,6 +554,18 @@ export default function App() {
       return next;
     });
   }, [entries, ignoredUnusedEntries]);
+
+  React.useEffect(() => {
+    if (selectedIds.size === 0) return;
+
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const entry of ignoredUnusedEntries) {
+        next.delete(entry.id);
+      }
+      return next;
+    });
+  }, [ignoredUnusedEntries]);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -717,7 +750,7 @@ export default function App() {
   async function handleRemove(mode) {
     if (!jobId) return;
 
-    const selectedCssIds = mode === 'css' ? Array.from(selectedIds) : [];
+    const selectedCssIds = mode === 'css' ? Array.from(selectedIdsForRemoval) : [];
     const selectedCommentIdsToRemove = mode === 'comments' ? selectedCommentIdsForRemoval : [];
 
     if (mode === 'css' && selectedCssIds.length === 0) {
@@ -879,7 +912,7 @@ export default function App() {
   }
 
   const hasResults = entries.length > 0 || commentEntries.length > 0;
-  const cssRemoveEnabled = selectedIds.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
+  const cssRemoveEnabled = selectedIdsForRemoval.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const commentRemoveEnabled = selectedCommentIdsForRemoval.length > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
     ? performanceReport.recommendations
@@ -1226,20 +1259,20 @@ export default function App() {
             {selectorTab === 'css' ? (
               <div className="selector-tab-panel selector-tab-panel-css">
                 <div className="css-workspace">
-                  <details className="protected-panel selector-card selector-card-protected" open={false}>
+                  <details className="protected-panel selector-card selector-card-protected" open>
                     <summary className="protected-summary">
                       <div>
                         <h3>Protected selectors</h3>
                         <p>Keep app classes or selector fragments out of removal. Separate entries with commas or new lines.</p>
                       </div>
                       <span className="protected-summary-meta">
-                        {protectedSelectors.length} saved
+                        {protectedSelectors.length} protected
                       </span>
                     </summary>
                     <div className="protected-body">
                       <div className="protected-actions">
                         <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
-                          Ignore
+                          Add to ignore
                         </button>
                         <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
                           Clear all
@@ -1259,7 +1292,7 @@ export default function App() {
                           onChange={(event) => setPresetName(event.target.value)}
                           placeholder="Preset name"
                         />
-                        <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectors.length === 0}>
+                        <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectorDraft.length === 0}>
                           Save
                         </button>
                         <select
@@ -1601,7 +1634,7 @@ export default function App() {
               <>
                 <span>{removableUnusedEntries.length} unused selector(s) preselected</span>
                 <span>{ignoredUnusedEntries.length} protected selector(s) ignored</span>
-                <span>{selectedIds.size} selected for removal</span>
+                <span>{selectedIdsForRemoval.size} selected for removal</span>
               </>
             ) : (
               <>

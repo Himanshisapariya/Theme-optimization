@@ -12,7 +12,6 @@ const JS_BLOCK_COMMENT_REGEX = /\/\*[\s\S]*?\*\//g;
 const JS_LINE_COMMENT_REGEX = /^[ \t]*\/\/.*(?:\r?\n|$)/gm;
 const HTML_COMMENT_REGEX = /<!--[\s\S]*?-->/g;
 const LIQUID_COMMENT_REGEX = /{%\s*comment\s*%}[\s\S]*?{%\s*endcomment\s*%}/gi;
-const IMG_TAG_REGEX = /<img\b[^>]*>/gi;
 const IFRAME_TAG_REGEX = /<iframe\b[^>]*>/gi;
 const LINK_STYLESHEET_REGEX = /<link\b[^>]*rel=["'][^"']*stylesheet[^"']*["'][^>]*>/gi;
 const SCRIPT_SRC_REGEX = /<script\b[^>]*\bsrc=["'][^"']+["'][^>]*>/gi;
@@ -455,7 +454,10 @@ function createPerformanceTracker() {
     scriptSrcTags: 0,
     inlineStyleAttributes: 0,
     fontFaceCount: 0,
-    cssFileStats: []
+    cssFileStats: [],
+    jsFileStats: [],
+    imagesMissingDimensions: [],
+    imagesMissingLazy: []
   };
 }
 
@@ -466,6 +468,9 @@ function buildPerformanceRecommendations(report, tracker) {
   const estimatedSavingsBytes = report.summary?.estimatedSavingsBytes || 0;
   const unusedCssFiles = Array.isArray(report.performance?.unusedCssFiles)
     ? report.performance.unusedCssFiles
+    : [];
+  const unusedJsFiles = Array.isArray(report.performance?.unusedJsFiles)
+    ? report.performance.unusedJsFiles
     : [];
   const cssFileStats = [...(tracker.cssFileStats || [])].sort((a, b) => b.bytes - a.bytes);
   const topCssFile = cssFileStats[0] || null;
@@ -595,6 +600,15 @@ function buildPerformanceRecommendations(report, tracker) {
     });
   }
 
+  if (unusedJsFiles.length > 0) {
+    recommendations.push({
+      id: 'unused-js-files',
+      severity: 'medium',
+      title: 'Remove JS files that are not linked anywhere',
+      detail: `${unusedJsFiles.length} JS file(s) do not appear to be referenced anywhere in the theme. Review and delete any that are truly unused.`
+    });
+  }
+
   return recommendations;
 }
 
@@ -671,6 +685,7 @@ export async function scanWorkspace(sourceDir) {
         dynamicParts.push(extractLiquidDynamic(content));
       }
     } else if (assetKind === 'js' || assetKind === 'js-liquid') {
+      tracker.jsFileStats.push({ filePath: relativePath, bytes: Buffer.byteLength(content) });
       staticParts.push(stripLiquidTags(content));
       if (assetKind === 'js-liquid') {
         dynamicParts.push(extractLiquidDynamic(content));
@@ -739,20 +754,33 @@ export async function scanWorkspace(sourceDir) {
       commentIndex = commentEntries.length;
 
       tracker.markupFileCount += 1;
-      tracker.imageTags += countMatches(content, IMG_TAG_REGEX);
       tracker.iframeTags += countMatches(content, IFRAME_TAG_REGEX);
       tracker.stylesheetLinks += countMatches(content, LINK_STYLESHEET_REGEX);
       tracker.scriptSrcTags += countMatches(content, SCRIPT_SRC_REGEX);
       tracker.inlineStyleAttributes += countMatches(content, INLINE_STYLE_REGEX);
 
-      for (const tag of String(content || '').match(IMG_TAG_REGEX) || []) {
-        const lowerTag = tag.toLowerCase();
+      const missingDimsLines = [];
+      const missingLazyLines = [];
+      const imgRegex = /<img\b[^>]*>/gi;
+      let imgMatch;
+      while ((imgMatch = imgRegex.exec(content)) !== null) {
+        tracker.imageTags += 1;
+        const tag = imgMatch[0];
+        const lineNumber = content.slice(0, imgMatch.index).split('\n').length;
         if (!hasAttribute(tag, 'width') || !hasAttribute(tag, 'height')) {
           tracker.imageTagsMissingDimensions += 1;
+          missingDimsLines.push(lineNumber);
         }
-        if (!/loading\s*=\s*["']lazy["']/i.test(lowerTag)) {
+        if (!/loading\s*=\s*["']lazy["']/i.test(tag.toLowerCase())) {
           tracker.imageTagsMissingLazy += 1;
+          missingLazyLines.push(lineNumber);
         }
+      }
+      if (missingDimsLines.length > 0) {
+        tracker.imagesMissingDimensions.push({ filePath: relativePath, fileName: path.basename(relativePath), lines: missingDimsLines });
+      }
+      if (missingLazyLines.length > 0) {
+        tracker.imagesMissingLazy.push({ filePath: relativePath, fileName: path.basename(relativePath), lines: missingLazyLines });
       }
 
       for (const tag of String(content || '').match(IFRAME_TAG_REGEX) || []) {
@@ -916,6 +944,20 @@ export async function scanWorkspace(sourceDir) {
     .filter((entry) => !entry.referenced)
     .map(({ absolutePath, referenced, ...entry }) => entry);
 
+  const jsFiles = textFiles.filter((file) => {
+    const kind = getAssetKind(file);
+    return kind === 'js' || kind === 'js-liquid';
+  });
+  const unusedJsFiles = jsFiles
+    .map((relativePath) => ({
+      filePath: relativePath,
+      fileName: path.basename(relativePath),
+      bytes: tracker.jsFileStats.find((item) => item.filePath === relativePath)?.bytes || 0,
+      referenced: isFileReferencedInCorpus(relativePath, matcher)
+    }))
+    .filter((entry) => !entry.referenced)
+    .map(({ referenced, ...entry }) => entry);
+
   return {
     createdAt: new Date().toISOString(),
     sourceDir,
@@ -947,6 +989,9 @@ export async function scanWorkspace(sourceDir) {
         fontFaceCount: tracker.fontFaceCount
       },
       unusedCssFiles,
+      unusedJsFiles,
+      imagesMissingDimensions: tracker.imagesMissingDimensions,
+      imagesMissingLazy: tracker.imagesMissingLazy,
       recommendations: buildPerformanceRecommendations({
         entries,
         summary: {
@@ -956,7 +1001,8 @@ export async function scanWorkspace(sourceDir) {
           estimatedSavingsBytes
         },
         performance: {
-          unusedCssFiles
+          unusedCssFiles,
+          unusedJsFiles
         }
       }, tracker)
     }

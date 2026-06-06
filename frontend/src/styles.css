@@ -421,6 +421,32 @@ select:focus {
   border: 1px solid var(--border);
 }
 
+.report-restore {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid rgba(125, 211, 252, 0.18);
+}
+
+.report-restore strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+
+.report-restore p {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.5;
+  font-size: 0.92rem;
+  max-width: 72ch;
+}
+
 .report-tab {
   display: inline-flex;
   align-items: center;
@@ -652,6 +678,57 @@ select:focus {
 .recommendation-low .recommendation-top span {
   background: var(--accent-dim);
   color: var(--accent);
+}
+
+/* ── Recommendation collapsible ───────────────────────── */
+
+.recommendation-detail {
+  margin-top: 10px;
+}
+
+.recommendation-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.82rem;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.recommendation-toggle:hover {
+  text-decoration: underline;
+}
+
+.recommendation-files {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recommendation-files li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.82rem;
+  padding: 5px 8px;
+  background: rgba(0,0,0,0.04);
+  border-radius: 4px;
+}
+
+.rec-filepath {
+  color: var(--text-1);
+  word-break: break-all;
+}
+
+.rec-lines {
+  color: var(--text-2);
+  font-size: 0.78rem;
+  font-family: monospace;
+  word-break: break-word;
 }
 
 /* ── Unlinked CSS panel ────────────────────────────────── */

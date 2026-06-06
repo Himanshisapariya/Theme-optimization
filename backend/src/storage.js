@@ -16,6 +16,9 @@ export function getJobPaths(jobId) {
   return {
     jobRoot,
     sourceDir: path.join(jobRoot, 'source'),
+    backupRootDir: path.join(jobRoot, 'backups'),
+    backupSourceDir: path.join(jobRoot, 'backups', 'original-source'),
+    backupReportPath: path.join(jobRoot, 'backups', 'original-report.json'),
     reportPath: path.join(jobRoot, 'report.json'),
     manifestPath: path.join(jobRoot, 'manifest.json')
   };

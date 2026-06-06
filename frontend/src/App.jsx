@@ -68,16 +68,35 @@ function readProtectedPresets() {
     if (!raw) return [];
 
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+    const items = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.presets)
+        ? parsed.presets
+        : Array.isArray(parsed?.items)
+          ? parsed.items
+          : [];
 
-    return parsed
-      .map((item) => ({
-        name: String(item?.name || '').trim(),
-        patterns: Array.isArray(item?.patterns)
-          ? item.patterns.map((pattern) => String(pattern || '').trim()).filter(Boolean)
-          : []
-      }))
-      .filter((item) => item.name);
+    return items
+      .map((item) => {
+        const name = String(item?.name || item?.presetName || item?.label || '').trim();
+        const rawPatterns = Array.isArray(item?.patterns)
+          ? item.patterns
+          : Array.isArray(item?.selectors)
+            ? item.selectors
+            : Array.isArray(item?.protectedSelectors)
+              ? item.protectedSelectors
+              : Array.isArray(item?.values)
+                ? item.values
+                : Array.isArray(item?.items)
+                  ? item.items
+                  : [];
+
+        return {
+          name,
+          patterns: rawPatterns.map((pattern) => String(pattern || '').trim()).filter(Boolean)
+        };
+      })
+      .filter((item) => item.name && item.patterns.length > 0);
   } catch (error) {
     return [];
   }
@@ -91,6 +110,22 @@ function normalizeProtectedSelectors(values) {
       .map((value) => String(value || '').trim())
       .filter(Boolean)
   )];
+}
+
+function readSavedProtectedPresets() {
+  return readProtectedPresets();
+}
+
+function findSavedProtectedPreset(name) {
+  const target = String(name || '').trim();
+  if (!target) return null;
+  return readProtectedPresets().find((item) => item.name === target) || null;
+}
+
+function writeSavedProtectedPresets(nextPresets) {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(nextPresets));
+  }
 }
 
 const IGNORED_UPLOAD_BASENAMES = new Set([
@@ -387,13 +422,17 @@ export default function App() {
   const [presetName, setPresetName] = useState('');
   const [savedProtectedPresets, setSavedProtectedPresets] = useState(() => readProtectedPresets());
   const [activePresetName, setActivePresetName] = useState('');
+  const protectedPresetsHydratedRef = useRef(false);
   const [selectedCommentIds, setSelectedCommentIds] = useState(new Set());
   const [ignoreShortComments, setIgnoreShortComments] = useState(false);
   const [ignoreLiquidDocComments, setIgnoreLiquidDocComments] = useState(true);
   const [selectorTab, setSelectorTab] = useState('css');
   const [selectedUnusedCssFiles, setSelectedUnusedCssFiles] = useState(new Set());
+  const [selectedUnusedJsFiles, setSelectedUnusedJsFiles] = useState(new Set());
+  const [expandedRecommendations, setExpandedRecommendations] = useState(new Set());
   const [lastCssRemoval, setLastCssRemoval] = useState(null);
   const [lastCommentRemoval, setLastCommentRemoval] = useState(null);
+  const [hasCleanupChanges, setHasCleanupChanges] = useState(false);
   const shortCommentMaxLines = 2;
 
   const protectedPatterns = useMemo(
@@ -469,11 +508,14 @@ export default function App() {
     setCommentEntries([]);
     setSelectedCommentIds(new Set());
     setSelectedUnusedCssFiles(new Set());
+    setSelectedUnusedJsFiles(new Set());
+    setExpandedRecommendations(new Set());
     setScanWarnings([]);
     setPerformanceReport(null);
     setReportTab('css');
     setLastCssRemoval(null);
     setLastCommentRemoval(null);
+    setHasCleanupChanges(false);
   }
 
   function parseProtectedSelectors(text) {
@@ -489,6 +531,7 @@ export default function App() {
 
     setProtectedSelectors((current) => normalizeProtectedSelectors([...current, ...nextValues]));
     setProtectedSelectorsText('');
+    setMessage(`Added ${nextValues.length} protected selector(s).`);
   }
 
   function clearProtectedSelectors() {
@@ -513,36 +556,44 @@ export default function App() {
         { name, patterns: [...nextProtectedSelectors] },
         ...current.filter((preset) => preset.name !== name)
       ];
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(next));
-      }
+      writeSavedProtectedPresets(next);
       return next;
     });
     setActivePresetName(name);
+    setMessage(`Saved protected preset "${name}".`);
   }
 
   function loadProtectedPreset(name) {
-    const preset = savedProtectedPresets.find((item) => item.name === name);
+    const preset = findSavedProtectedPreset(name);
     if (!preset) return;
 
     setProtectedSelectors([...preset.patterns]);
     setPresetName(preset.name);
     setActivePresetName(preset.name);
     setProtectedSelectorsText('');
+    setSavedProtectedPresets(readSavedProtectedPresets());
+    setMessage(`Loaded protected preset "${preset.name}".`);
   }
 
   function deleteProtectedPreset(name) {
     setSavedProtectedPresets((current) => {
       const next = current.filter((preset) => preset.name !== name);
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(next));
-      }
+      writeSavedProtectedPresets(next);
       return next;
     });
 
     if (activePresetName === name) {
       setActivePresetName('');
     }
+    setMessage(`Deleted protected preset "${name}".`);
+  }
+
+  function refreshProtectedPresets() {
+    const next = readSavedProtectedPresets();
+    setSavedProtectedPresets(next);
+    setMessage(next.length > 0
+      ? `Loaded ${next.length} saved protected preset(s).`
+      : 'No saved protected presets were found.');
   }
 
   React.useEffect(() => {
@@ -571,8 +622,27 @@ export default function App() {
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (!protectedPresetsHydratedRef.current) {
+      protectedPresetsHydratedRef.current = true;
+      return;
+    }
     window.localStorage.setItem(PROTECTED_PRESETS_STORAGE_KEY, JSON.stringify(savedProtectedPresets));
   }, [savedProtectedPresets]);
+
+  React.useEffect(() => {
+    setSavedProtectedPresets(readSavedProtectedPresets());
+  }, []);
+
+  React.useEffect(() => {
+    function handleStorageChange(event) {
+      if (event.key === PROTECTED_PRESETS_STORAGE_KEY) {
+        setSavedProtectedPresets(readProtectedPresets());
+      }
+    }
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
 
   React.useEffect(() => {
     if (commentEntries.length === 0) return;
@@ -884,6 +954,7 @@ export default function App() {
           unusedRules: Math.max(0, current.unusedRules - selectedCssIdSet.size),
           estimatedSavingsBytes: Math.max(0, current.estimatedSavingsBytes - removedSelectorBytes)
         }));
+        setHasCleanupChanges(true);
       } else {
         const removedCommentEntries = commentEntries.filter((entry) => selectedCommentIdSet.has(entry.id));
         setLastCommentRemoval({
@@ -894,6 +965,7 @@ export default function App() {
         setCommentEntries((current) => current.filter((entry) => !selectedCommentIdSet.has(entry.id)));
         setSelectedCommentIds(new Set());
         setReportTab('comments');
+        setHasCleanupChanges(true);
       }
     } catch (error) {
       setMessage(error.message);
@@ -1013,11 +1085,132 @@ export default function App() {
         if (!current) return current;
         return {
           ...current,
-          unusedCssFiles: (current.unusedCssFiles || []).filter((f) => !deletedSet.has(f.filePath))
+          unusedCssFiles: (current.unusedCssFiles || []).filter((f) => !deletedSet.has(f.filePath)),
+          unusedJsFiles: (current.unusedJsFiles || []).filter((f) => !deletedSet.has(f.filePath))
         };
       });
+      setHasCleanupChanges(true);
     } catch (error) {
       setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRemoveUnlinkedJsFiles() {
+    if (!jobId) return;
+    const filePaths = Array.from(selectedUnusedJsFiles);
+    if (filePaths.length === 0) {
+      setMessage('Please select at least one unlinked JS file to remove.');
+      return;
+    }
+    setLoading(true);
+    setMessage('Removing selected unlinked JS files...');
+    try {
+      const response = await fetch(`/api/remove-files/${jobId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePaths })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'File removal failed.');
+      const deletedSet = new Set(data.deletedFiles);
+
+      const prunedCommentEntries = commentEntries.filter((e) => !deletedSet.has(e.filePath));
+      const prunedCommentIds = new Set(commentEntries.filter((e) => deletedSet.has(e.filePath)).map((e) => e.id));
+      setCommentEntries(prunedCommentEntries);
+      setSelectedCommentIds((current) => {
+        const next = new Set(current);
+        for (const id of prunedCommentIds) next.delete(id);
+        return next;
+      });
+
+      if (localFolderMode === 'handle' && rootDirHandleRef.current) {
+        setMessage('Deleting files from your local folder...');
+        const localPaths = data.deletedFiles.map(
+          (serverPath) => localFilePathsRef.current.get(serverPath) || serverPath
+        );
+        const result = await deleteFilesFromDirHandle(rootDirHandleRef.current, localPaths);
+        if (result.deleted > 0) {
+          setMessage(`Deleted ${data.count} unlinked JS file(s) directly from your folder.`);
+        } else if (result.failed > 0) {
+          setMessage(`Removed ${data.count} JS file(s) from workspace, but local deletion was blocked (${result.firstError || 'permission issue'}). Use "Download updated" to save changes.`);
+        } else {
+          setMessage(`Removed ${data.count} unlinked JS file(s) from workspace.`);
+        }
+        setStep('applied');
+      } else {
+        setMessage(`Removed ${data.count} unlinked JS file(s). Click "Download updated" to save the updated workspace.`);
+        setStep('removed');
+      }
+      setSelectedUnusedJsFiles(new Set());
+      setPerformanceReport((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          unusedCssFiles: (current.unusedCssFiles || []).filter((f) => !deletedSet.has(f.filePath)),
+          unusedJsFiles: (current.unusedJsFiles || []).filter((f) => !deletedSet.has(f.filePath))
+        };
+      });
+      setHasCleanupChanges(true);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRestoreAllDeletedThings() {
+    if (!jobId) return;
+
+    setLoading(true);
+    setStep('removing');
+    setMessage('Restoring deleted files, selectors, and comments...');
+
+    try {
+      const response = await fetch(`/api/restore/${jobId}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Restore failed.');
+
+      setSummary(data.summary || initialSummary);
+      setEntries(Array.isArray(data.entries) ? data.entries : []);
+      setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
+      setPerformanceReport(data.performance || null);
+      setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+      setSelectedUnusedCssFiles(new Set());
+      setSelectedUnusedJsFiles(new Set());
+      setLastCssRemoval(null);
+      setLastCommentRemoval(null);
+      setHasCleanupChanges(false);
+      setSelectedIds(new Set(
+        (Array.isArray(data.entries) ? data.entries : [])
+          .filter((entry) => entry.status === 'unused')
+          .filter((entry) => !selectorMatchesProtected(entry.selector, protectedPatterns))
+          .map((entry) => entry.id)
+      ));
+      setSelectedCommentIds(new Set((Array.isArray(data.commentEntries) ? data.commentEntries : []).map((entry) => entry.id)));
+      setReportTab('css');
+      setStep('scanned');
+
+      if (localFolderMode === 'handle' && rootDirHandleRef.current && fileHandlesRef.current.size > 0 && Array.isArray(data.files)) {
+        setMessage('Restoring deleted items in your local folder...');
+        const restoreResult = await writeFilesToHandleMap(fileHandlesRef.current, data.files, localFolderName);
+        if (restoreResult.written > 0) {
+          setMessage(`Restored the original workspace and rewrote ${restoreResult.written} file(s) back to your folder.`);
+        } else if (restoreResult.failed > 0) {
+          setMessage(`Restored the original workspace, but local folder write was blocked (${restoreResult.firstError || 'permission issue'}).`);
+        } else {
+          setMessage('Restored the original workspace. No local files needed rewriting.');
+        }
+        setStep('applied');
+      } else {
+        setMessage(data.message || 'Cleanup restored. The original workspace is back.');
+      }
+    } catch (error) {
+      setMessage(error.message);
+      setStep('scanned');
     } finally {
       setLoading(false);
     }
@@ -1060,16 +1253,27 @@ export default function App() {
   const cssRemoveEnabled = selectedIdsForRemoval.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const commentRemoveEnabled = selectedCommentIdsForRemoval.length > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const unlinkedFilesRemoveEnabled = selectedUnusedCssFiles.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
+  const unlinkedJsFilesRemoveEnabled = selectedUnusedJsFiles.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const performanceRecommendations = Array.isArray(performanceReport?.recommendations)
     ? performanceReport.recommendations
     : [];
   const unusedCssFiles = Array.isArray(performanceReport?.unusedCssFiles)
     ? performanceReport.unusedCssFiles
     : [];
+  const unusedJsFiles = Array.isArray(performanceReport?.unusedJsFiles)
+    ? performanceReport.unusedJsFiles
+    : [];
+  const imagesMissingDimensions = Array.isArray(performanceReport?.imagesMissingDimensions)
+    ? performanceReport.imagesMissingDimensions
+    : [];
+  const imagesMissingLazy = Array.isArray(performanceReport?.imagesMissingLazy)
+    ? performanceReport.imagesMissingLazy
+    : [];
   const cssReportEntries = lastCssRemoval?.removedEntries || [];
   const commentReportEntries = lastCommentRemoval?.removedEntries || [];
   const showCssPdfAction = cssReportEntries.length > 0 && ['removed', 'applied'].includes(step);
   const showCommentPdfAction = commentReportEntries.length > 0 && ['removed', 'applied'].includes(step);
+  const canRestoreCleanup = hasCleanupChanges && !loading && Boolean(jobId);
 
   return (
     <div className="app-shell">
@@ -1211,6 +1415,18 @@ export default function App() {
               </button>
             </div>
 
+            {canRestoreCleanup ? (
+              <div className="report-restore">
+                <div>
+                  <strong>Cleanup complete</strong>
+                  <p>Restore the original uploaded files, selectors, comments, and unlinked file removals in one step.</p>
+                </div>
+                <button className="secondary" type="button" onClick={handleRestoreAllDeletedThings} disabled={loading}>
+                  Restore all deleted things
+                </button>
+              </div>
+            ) : null}
+
             {reportTab === 'css' ? (
               <>
                 <div className="summary-grid">
@@ -1295,15 +1511,53 @@ export default function App() {
                   <p className="empty-state performance-empty">No performance recommendations yet. Run a scan to generate them.</p>
                 ) : (
                   <div className="recommendation-list">
-                    {performanceRecommendations.map((recommendation) => (
-                      <article key={recommendation.id} className={`recommendation recommendation-${recommendation.severity}`}>
-                        <div className="recommendation-top">
-                          <strong>{recommendation.title}</strong>
-                          <span>{recommendation.severity}</span>
-                        </div>
-                        <p>{recommendation.detail}</p>
-                      </article>
-                    ))}
+                    {performanceRecommendations.map((recommendation) => {
+                      const detailFiles =
+                        recommendation.id === 'image-dimensions' ? imagesMissingDimensions
+                        : recommendation.id === 'image-lazy-load' ? imagesMissingLazy
+                        : null;
+                      const isExpanded = expandedRecommendations.has(recommendation.id);
+                      return (
+                        <article key={recommendation.id} className={`recommendation recommendation-${recommendation.severity}`}>
+                          <div className="recommendation-top">
+                            <strong>{recommendation.title}</strong>
+                            <span>{recommendation.severity}</span>
+                          </div>
+                          <p>{recommendation.detail}</p>
+                          {detailFiles && detailFiles.length > 0 ? (
+                            <div className="recommendation-detail">
+                              <button
+                                type="button"
+                                className="recommendation-toggle"
+                                onClick={() => setExpandedRecommendations((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(recommendation.id)) {
+                                    next.delete(recommendation.id);
+                                  } else {
+                                    next.add(recommendation.id);
+                                  }
+                                  return next;
+                                })}
+                              >
+                                {isExpanded ? '▲ Hide files' : `▼ Show ${detailFiles.length} file(s)`}
+                              </button>
+                              {isExpanded ? (
+                                <ul className="recommendation-files">
+                                  {detailFiles.map((f) => (
+                                    <li key={f.filePath}>
+                                      <span className="rec-filepath">{f.filePath}</span>
+                                      <span className="rec-lines">
+                                        {f.lines.map((ln) => `L${ln}`).join(' · ')}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1360,6 +1614,80 @@ export default function App() {
                                   checked={selectedUnusedCssFiles.has(file.filePath)}
                                   onChange={() => {
                                     setSelectedUnusedCssFiles((current) => {
+                                      const next = new Set(current);
+                                      if (next.has(file.filePath)) {
+                                        next.delete(file.filePath);
+                                      } else {
+                                        next.add(file.filePath);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                />
+                              </td>
+                              <td className="selector-cell">{file.filePath}</td>
+                              <td>{formatBytes(file.bytes)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="unused-css-panel">
+                  <div className="group-head">
+                    <div>
+                      <h3>JS files not linked anywhere</h3>
+                      <p>These script files do not appear to be referenced by the scanned theme files. Select files to delete them from the workspace.</p>
+                    </div>
+                    <div className="group-tools">
+                      <span className="group-count">{selectedUnusedJsFiles.size}/{unusedJsFiles.length}</span>
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={handleRemoveUnlinkedJsFiles}
+                        disabled={!unlinkedJsFilesRemoveEnabled}
+                      >
+                        {loading ? 'Removing...' : 'Remove selected files'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>
+                            <input
+                              type="checkbox"
+                              checked={unusedJsFiles.length > 0 && unusedJsFiles.every((f) => selectedUnusedJsFiles.has(f.filePath))}
+                              onChange={() => {
+                                const allPaths = unusedJsFiles.map((f) => f.filePath);
+                                const allSelected = allPaths.length > 0 && allPaths.every((p) => selectedUnusedJsFiles.has(p));
+                                setSelectedUnusedJsFiles(allSelected ? new Set() : new Set(allPaths));
+                              }}
+                            />
+                          </th>
+                          <th>File</th>
+                          <th>Size</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unusedJsFiles.length === 0 ? (
+                          <tr>
+                            <td colSpan="3" className="empty-state">
+                              No unlinked JS files found.
+                            </td>
+                          </tr>
+                        ) : (
+                          unusedJsFiles.map((file) => (
+                            <tr key={file.filePath} className="row-unused">
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedUnusedJsFiles.has(file.filePath)}
+                                  onChange={() => {
+                                    setSelectedUnusedJsFiles((current) => {
                                       const next = new Set(current);
                                       if (next.has(file.filePath)) {
                                         next.delete(file.filePath);
@@ -1462,7 +1790,6 @@ export default function App() {
                           className="preset-select"
                           value={activePresetName}
                           onChange={(event) => loadProtectedPreset(event.target.value)}
-                          disabled={savedProtectedPresets.length === 0}
                         >
                           <option value="">Load preset</option>
                           {savedProtectedPresets.map((preset) => (
@@ -1471,6 +1798,9 @@ export default function App() {
                             </option>
                           ))}
                         </select>
+                        <button className="secondary" type="button" onClick={refreshProtectedPresets}>
+                          Refresh
+                        </button>
                         <button
                           className="secondary"
                           type="button"

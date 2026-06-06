@@ -35,6 +35,59 @@ async function saveBuffer(filePath, buffer) {
   await fs.writeFile(filePath, buffer);
 }
 
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureCleanupBackup(paths) {
+  const backupReady = await pathExists(paths.backupSourceDir) && await pathExists(paths.backupReportPath);
+  if (backupReady) {
+    return;
+  }
+
+  await fs.mkdir(paths.backupRootDir, { recursive: true });
+  await fs.rm(paths.backupSourceDir, { recursive: true, force: true });
+  await fs.cp(paths.sourceDir, paths.backupSourceDir, { recursive: true, force: true });
+  await fs.copyFile(paths.reportPath, paths.backupReportPath);
+}
+
+async function collectRestoredFiles(dir) {
+  const files = await fg(['**/*.{css,liquid,html,js}'], {
+    cwd: dir,
+    onlyFiles: true,
+    dot: true,
+    ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
+  });
+
+  const payload = [];
+  for (const relativePath of files) {
+    const absolutePath = path.join(dir, relativePath);
+    const buffer = await fs.readFile(absolutePath);
+    payload.push({
+      relativePath,
+      contentBase64: buffer.toString('base64')
+    });
+  }
+
+  return payload;
+}
+
+async function restoreBackupToWorkspace(paths) {
+  await ensureCleanupBackup(paths);
+  await fs.rm(paths.sourceDir, { recursive: true, force: true });
+  await fs.cp(paths.backupSourceDir, paths.sourceDir, { recursive: true, force: true });
+
+  const backupReport = JSON.parse(await fs.readFile(paths.backupReportPath, 'utf8'));
+  await writeReport(paths.reportPath, backupReport);
+
+  return backupReport;
+}
+
 const IGNORED_UPLOAD_BASENAMES = new Set([
   '.DS_Store',
   'Thumbs.db',
@@ -240,6 +293,7 @@ app.post('/api/remove/:jobId', async (req, res) => {
 
     const paths = getJobPaths(jobId);
     const report = await readReport(paths.reportPath);
+    await ensureCleanupBackup(paths);
     const allowedIds = new Set(report.entries.filter((entry) => entry.status === 'unused').map((entry) => entry.id));
     const allowedCommentIds = new Set((report.commentEntries || []).map((entry) => entry.id));
     const invalidIds = cssSelectedIds.filter((id) => !allowedIds.has(id));
@@ -293,10 +347,17 @@ app.post('/api/remove-files/:jobId', async (req, res) => {
 
     const paths = getJobPaths(jobId);
     const report = await readReport(paths.reportPath);
+    await ensureCleanupBackup(paths);
     const unusedCssFiles = Array.isArray(report.performance?.unusedCssFiles)
       ? report.performance.unusedCssFiles
       : [];
-    const allowedPaths = new Set(unusedCssFiles.map((f) => f.filePath));
+    const unusedJsFiles = Array.isArray(report.performance?.unusedJsFiles)
+      ? report.performance.unusedJsFiles
+      : [];
+    const allowedPaths = new Set([
+      ...unusedCssFiles.map((f) => f.filePath),
+      ...unusedJsFiles.map((f) => f.filePath)
+    ]);
     const invalidPaths = filePaths.filter((p) => !allowedPaths.has(p));
 
     if (invalidPaths.length > 0) {
@@ -324,12 +385,64 @@ app.post('/api/remove-files/:jobId', async (req, res) => {
           (f) => !deletedSet.has(f.filePath)
         );
       }
+      if (report.performance?.unusedJsFiles) {
+        report.performance.unusedJsFiles = report.performance.unusedJsFiles.filter(
+          (f) => !deletedSet.has(f.filePath)
+        );
+      }
       await writeReport(paths.reportPath, report);
     }
 
     res.json({ jobId, deletedFiles, count: deletedFiles.length });
   } catch (error) {
     res.status(500).json({ error: error.message || 'File removal failed.' });
+  }
+});
+
+app.post('/api/restore/:jobId', async (req, res) => {
+  try {
+    const paths = getJobPaths(req.params.jobId);
+    if (!(await pathExists(paths.backupSourceDir)) || !(await pathExists(paths.backupReportPath))) {
+      return res.status(404).json({ error: 'No cleanup backup found to restore.' });
+    }
+
+    const report = await restoreBackupToWorkspace(paths);
+    const files = await collectRestoredFiles(paths.sourceDir);
+    const uploadedFiles = await fg(['**/*'], {
+      cwd: paths.sourceDir,
+      onlyFiles: true,
+      dot: true,
+      ignore: ['**/node_modules/**', '**/backups/**', '**/uploads/**', '**/cleaned/**']
+    });
+
+    await fs.writeFile(
+      paths.manifestPath,
+      JSON.stringify({
+        selectedIds: [],
+        selectedCommentIds: [],
+        removeMode: '',
+        protectedPatterns: [],
+        ignoreSmallComments: false,
+        smallCommentMaxLines: 2,
+        ignoreLiquidDocComments: false,
+        removedAt: null,
+        restoredAt: new Date().toISOString()
+      }, null, 2)
+    );
+
+    res.json({
+      jobId: req.params.jobId,
+      message: 'Cleanup restored. The original workspace and report are back.',
+      summary: report.summary,
+      entries: report.entries,
+      commentEntries: report.commentEntries || [],
+      warnings: report.warnings || [],
+      performance: report.performance || null,
+      uploadedFiles,
+      files
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Restore failed.' });
   }
 });
 

@@ -1280,7 +1280,7 @@ export default function App() {
       <main className="container">
         <section className="hero">
           <div>
-            <p className="eyebrow">Shopify CSS cleanup automation</p>
+            <p className="eyebrow">Shopify theme cleanup automation</p>
             <h1>Scan and review your theme</h1>
             <p className="subcopy">
               Upload a theme folder, CSS files, or a ZIP. The scanner checks `.liquid`, `.html`, and `.js`

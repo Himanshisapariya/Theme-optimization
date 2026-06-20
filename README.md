@@ -108,6 +108,4 @@ In supported browsers, the app can write the cleaned files directly back into a 
 
 ## Notes
 
-- This is a beginner-friendly starter project, so the scan is intentionally conservative.
-- The tool is designed to avoid false positives by using theme-aware matching.
-- For production use, add authentication, rate limiting, and streaming upload handling.
+- This is a beginner-friendly starter project, so double check everuthing before use in actual projects. It currnelty gives 70%-80% accurate results.

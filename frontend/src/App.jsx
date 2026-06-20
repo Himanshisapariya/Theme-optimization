@@ -8,6 +8,7 @@ const initialSummary = {
 };
 
 const PROTECTED_PRESETS_STORAGE_KEY = 'css-analyser-protected-presets-v1';
+const DEFAULT_EXPANDED_RECOMMENDATIONS = new Set(['image-dimensions', 'image-lazy-load']);
 
 function formatBytes(bytes) {
   if (!bytes && bytes !== 0) return '0 B';
@@ -429,7 +430,7 @@ export default function App() {
   const [selectorTab, setSelectorTab] = useState('css');
   const [selectedUnusedCssFiles, setSelectedUnusedCssFiles] = useState(new Set());
   const [selectedUnusedJsFiles, setSelectedUnusedJsFiles] = useState(new Set());
-  const [expandedRecommendations, setExpandedRecommendations] = useState(new Set());
+  const [expandedRecommendations, setExpandedRecommendations] = useState(() => new Set(DEFAULT_EXPANDED_RECOMMENDATIONS));
   const [lastCssRemoval, setLastCssRemoval] = useState(null);
   const [lastCommentRemoval, setLastCommentRemoval] = useState(null);
   const [hasCleanupChanges, setHasCleanupChanges] = useState(false);
@@ -509,10 +510,11 @@ export default function App() {
     setSelectedCommentIds(new Set());
     setSelectedUnusedCssFiles(new Set());
     setSelectedUnusedJsFiles(new Set());
-    setExpandedRecommendations(new Set());
+    setExpandedRecommendations(new Set(DEFAULT_EXPANDED_RECOMMENDATIONS));
     setScanWarnings([]);
     setPerformanceReport(null);
     setReportTab('css');
+    setSelectorTab('css');
     setLastCssRemoval(null);
     setLastCommentRemoval(null);
     setHasCleanupChanges(false);
@@ -791,6 +793,11 @@ export default function App() {
       setEntries(data.entries);
       setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
       setPerformanceReport(data.performance || null);
+      setExpandedRecommendations(new Set(
+        (Array.isArray(data.performance?.recommendations) ? data.performance.recommendations : [])
+          .map((recommendation) => recommendation.id)
+          .filter((id) => DEFAULT_EXPANDED_RECOMMENDATIONS.has(id))
+      ));
       setLastCssRemoval(null);
       setLastCommentRemoval(null);
       const selectedByDefault = new Set(
@@ -820,7 +827,7 @@ export default function App() {
         const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
         setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${commentText}${warningText}${performanceText}`);
       }
-      setReportTab(recommendationCount > 0 ? 'performance' : 'css');
+      setSelectorTab(recommendationCount > 0 ? 'performance' : 'css');
       setStep('scanned');
     } catch (error) {
       setMessage(error.message);
@@ -1178,6 +1185,11 @@ export default function App() {
       setEntries(Array.isArray(data.entries) ? data.entries : []);
       setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
       setPerformanceReport(data.performance || null);
+      setExpandedRecommendations(new Set(
+        (Array.isArray(data.performance?.recommendations) ? data.performance.recommendations : [])
+          .map((recommendation) => recommendation.id)
+          .filter((id) => DEFAULT_EXPANDED_RECOMMENDATIONS.has(id))
+      ));
       setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       setSelectedUnusedCssFiles(new Set());
       setSelectedUnusedJsFiles(new Set());
@@ -1192,6 +1204,7 @@ export default function App() {
       ));
       setSelectedCommentIds(new Set((Array.isArray(data.commentEntries) ? data.commentEntries : []).map((entry) => entry.id)));
       setReportTab('css');
+      setSelectorTab('css');
       setStep('scanned');
 
       if (localFolderMode === 'handle' && rootDirHandleRef.current && fileHandlesRef.current.size > 0 && Array.isArray(data.files)) {
@@ -1403,16 +1416,6 @@ export default function App() {
                 Comment report
                 {commentReportEntries.length > 0 ? <span>{commentReportEntries.length}</span> : null}
               </button>
-              <button
-                type="button"
-                className={`report-tab ${reportTab === 'performance' ? 'report-tab-active' : ''}`}
-                onClick={() => setReportTab('performance')}
-                role="tab"
-                aria-selected={reportTab === 'performance'}
-              >
-                Performance
-                {performanceRecommendations.length > 0 ? <span>{performanceRecommendations.length}</span> : null}
-              </button>
             </div>
 
             {canRestoreCleanup ? (
@@ -1580,7 +1583,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="table-wrap">
-                    <table>
+                    <table className="selector-table selector-table-css">
                       <thead>
                         <tr>
                           <th>
@@ -1654,7 +1657,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="table-wrap">
-                    <table>
+                    <table className="selector-table selector-table-css">
                       <thead>
                         <tr>
                           <th>
@@ -1742,6 +1745,26 @@ export default function App() {
               >
                 Commented code
                 <span>{commentEntries.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`selector-tab ${selectorTab === 'performance' ? 'selector-tab-active' : ''}`}
+                onClick={() => setSelectorTab('performance')}
+                role="tab"
+                aria-selected={selectorTab === 'performance'}
+              >
+                Performance
+                {performanceRecommendations.length > 0 ? <span>{performanceRecommendations.length}</span> : null}
+              </button>
+              <button
+                type="button"
+                className={`selector-tab ${selectorTab === 'files' ? 'selector-tab-active' : ''}`}
+                onClick={() => setSelectorTab('files')}
+                role="tab"
+                aria-selected={selectorTab === 'files'}
+              >
+                Files not linked anywhere
+                <span>{unusedCssFiles.length + unusedJsFiles.length}</span>
               </button>
             </div>
           </div>
@@ -1856,7 +1879,7 @@ export default function App() {
                   </div>
 
                   <div className="table-wrap">
-                    <table>
+                    <table className="selector-table selector-table-comments">
                       <thead>
                         <tr>
                           <th>Remove</th>
@@ -1942,7 +1965,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : selectorTab === 'comments' ? (
               <div className="selector-tab-panel selector-tab-panel-comments">
                 <div className="comment-stack">
                 <section className="selector-group selector-group-comments">
@@ -2045,7 +2068,7 @@ export default function App() {
                     </div>
 
                     <div className="table-wrap">
-                      <table>
+                      <table className="selector-table selector-table-comments">
                         <thead>
                           <tr>
                             <th>File name</th>
@@ -2088,7 +2111,7 @@ export default function App() {
                     </div>
 
                     <div className="table-wrap">
-                      <table>
+                      <table className="selector-table selector-table-comments">
                         <thead>
                           <tr>
                             <th>File name</th>
@@ -2117,6 +2140,238 @@ export default function App() {
                     </div>
                   </section>
                 ) : null}
+                </div>
+              </div>
+            ) : selectorTab === 'files' ? (
+              <div className="selector-tab-panel selector-tab-panel-files">
+                <div className="performance-panel">
+                  <div className="performance-head">
+                    <div>
+                      <h3>Files not linked anywhere</h3>
+                      <p>These stylesheet and script files do not appear to be referenced by the scanned theme files.</p>
+                    </div>
+                    <span className="group-count">{unusedCssFiles.length + unusedJsFiles.length}</span>
+                  </div>
+
+                  {unusedCssFiles.length > 0 ? (
+                    <div className="unused-css-panel">
+                      <div className="performance-head">
+                        <div>
+                          <h3>CSS files not linked anywhere</h3>
+                          <p>Select files to delete them from the workspace.</p>
+                        </div>
+                        <span className="group-count">{selectedUnusedCssFiles.size}/{unusedCssFiles.length}</span>
+                      </div>
+                      <div className="group-tools" style={{ marginBottom: 12 }}>
+                        <button
+                          className="primary"
+                          type="button"
+                          onClick={handleRemoveUnlinkedFiles}
+                          disabled={!unlinkedFilesRemoveEnabled}
+                        >
+                          {loading ? 'Removing...' : 'Remove selected files'}
+                        </button>
+                      </div>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>
+                                <input
+                                  type="checkbox"
+                                  checked={unusedCssFiles.length > 0 && unusedCssFiles.every((f) => selectedUnusedCssFiles.has(f.filePath))}
+                                  onChange={() => {
+                                    const allPaths = unusedCssFiles.map((f) => f.filePath);
+                                    const allSelected = allPaths.length > 0 && allPaths.every((p) => selectedUnusedCssFiles.has(p));
+                                    setSelectedUnusedCssFiles(allSelected ? new Set() : new Set(allPaths));
+                                  }}
+                                />
+                              </th>
+                              <th>File</th>
+                              <th>Size</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {unusedCssFiles.length === 0 ? (
+                              <tr>
+                                <td colSpan="3" className="empty-state">
+                                  No unlinked CSS files found.
+                                </td>
+                              </tr>
+                            ) : (
+                              unusedCssFiles.map((file) => (
+                                <tr key={file.filePath} className="row-unused">
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedUnusedCssFiles.has(file.filePath)}
+                                      onChange={() => {
+                                        setSelectedUnusedCssFiles((current) => {
+                                          const next = new Set(current);
+                                          if (next.has(file.filePath)) {
+                                            next.delete(file.filePath);
+                                          } else {
+                                            next.add(file.filePath);
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                  </td>
+                                  <td className="selector-cell">{file.filePath}</td>
+                                  <td>{formatBytes(file.bytes || 0)}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {unusedJsFiles.length > 0 ? (
+                    <div className="unused-css-panel">
+                      <div className="performance-head">
+                        <div>
+                          <h3>JS files not linked anywhere</h3>
+                          <p>Select files to delete them from the workspace.</p>
+                        </div>
+                        <span className="group-count">{selectedUnusedJsFiles.size}/{unusedJsFiles.length}</span>
+                      </div>
+                      <div className="group-tools" style={{ marginBottom: 12 }}>
+                        <button
+                          className="primary"
+                          type="button"
+                          onClick={handleRemoveUnlinkedJsFiles}
+                          disabled={!unlinkedJsFilesRemoveEnabled}
+                        >
+                          {loading ? 'Removing...' : 'Remove selected JS files'}
+                        </button>
+                      </div>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>
+                                <input
+                                  type="checkbox"
+                                  checked={unusedJsFiles.length > 0 && unusedJsFiles.every((f) => selectedUnusedJsFiles.has(f.filePath))}
+                                  onChange={() => {
+                                    const allPaths = unusedJsFiles.map((f) => f.filePath);
+                                    const allSelected = allPaths.length > 0 && allPaths.every((p) => selectedUnusedJsFiles.has(p));
+                                    setSelectedUnusedJsFiles(allSelected ? new Set() : new Set(allPaths));
+                                  }}
+                                />
+                              </th>
+                              <th>File</th>
+                              <th>Size</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {unusedJsFiles.length === 0 ? (
+                              <tr>
+                                <td colSpan="3" className="empty-state">
+                                  No unlinked JS files found.
+                                </td>
+                              </tr>
+                            ) : (
+                              unusedJsFiles.map((file) => (
+                                <tr key={file.filePath} className="row-unused">
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedUnusedJsFiles.has(file.filePath)}
+                                      onChange={() => {
+                                        setSelectedUnusedJsFiles((current) => {
+                                          const next = new Set(current);
+                                          if (next.has(file.filePath)) {
+                                            next.delete(file.filePath);
+                                          } else {
+                                            next.add(file.filePath);
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                  </td>
+                                  <td className="selector-cell">{file.filePath}</td>
+                                  <td>{formatBytes(file.bytes || 0)}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <div className="selector-tab-panel selector-tab-panel-performance">
+                <div className="performance-panel">
+                  <div className="performance-head">
+                    <div>
+                      <h3>Performance recommendations</h3>
+                      <p>These are generated from the uploaded Shopify theme and focus on speed, LCP, CLS, and asset weight.</p>
+                    </div>
+                    <span className="group-count">{performanceRecommendations.length}</span>
+                  </div>
+                  {performanceRecommendations.length === 0 ? (
+                    <p className="empty-state performance-empty">No performance recommendations yet. Run a scan to generate them.</p>
+                  ) : (
+                  <div className="recommendation-list">
+                    {performanceRecommendations.map((recommendation) => {
+                      const detailFiles =
+                        recommendation.id === 'image-dimensions' ? imagesMissingDimensions
+                        : recommendation.id === 'image-lazy-load' ? imagesMissingLazy
+                        : null;
+                      const isExpanded = expandedRecommendations.has(recommendation.id);
+                      return (
+                        <article key={recommendation.id} className={`recommendation recommendation-${recommendation.severity}`}>
+                          <div className="recommendation-top">
+                            <strong>{recommendation.title}</strong>
+                            <span>{recommendation.severity}</span>
+                          </div>
+                          <p>{recommendation.detail}</p>
+                          {detailFiles && detailFiles.length > 0 ? (
+                            <div className="recommendation-detail">
+                              <button
+                                type="button"
+                                className="recommendation-toggle"
+                                onClick={() => setExpandedRecommendations((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(recommendation.id)) {
+                                    next.delete(recommendation.id);
+                                  } else {
+                                    next.add(recommendation.id);
+                                  }
+                                  return next;
+                                })}
+                              >
+                                {isExpanded ? '▲ Hide files' : `▼ Show ${detailFiles.length} file(s)`}
+                              </button>
+                              {isExpanded ? (
+                                <ul className="recommendation-files">
+                                  {detailFiles.map((file) => (
+                                    <li key={file.filePath}>
+                                      <span className="rec-filepath">{file.filePath}</span>
+                                      <span className="rec-lines">
+                                        {Array.isArray(file.lines) && file.lines.length > 0
+                                          ? file.lines.map((ln) => `L${ln}`).join(' · ')
+                                          : 'No line numbers available'}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+
                 </div>
               </div>
             )}

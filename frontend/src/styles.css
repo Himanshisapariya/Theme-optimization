@@ -860,6 +860,73 @@ select:focus {
   border-color: rgba(52, 211, 153, 0.12);
 }
 
+.selector-tab-panel-performance {
+  border-color: rgba(96, 165, 250, 0.2);
+}
+
+.selector-tab-panel-files {
+  border-color: rgba(249, 115, 22, 0.18);
+}
+
+.selector-tab-panel-files .performance-panel {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.selector-tab-panel-files .unused-css-panel .table-wrap {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.55) transparent;
+}
+
+.selector-tab-panel-files .unused-css-panel .table-wrap::-webkit-scrollbar {
+  height: 8px;
+}
+
+.selector-tab-panel-files .unused-css-panel .table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.selector-tab-panel-files .unused-css-panel .table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.55);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.selector-tab-panel-files .unused-css-panel .table-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 114, 128, 0.7);
+  background-clip: content-box;
+}
+
+.selector-tab-panel-files .performance-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.55) transparent;
+}
+
+.selector-tab-panel-files .performance-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.selector-tab-panel-files .performance-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.selector-tab-panel-files .performance-panel::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.55);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.selector-tab-panel-files .performance-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 114, 128, 0.7);
+  background-clip: content-box;
+}
+
 .css-workspace {
   display: grid;
   gap: 14px;
@@ -1095,6 +1162,85 @@ table {
   width: 100%;
   border-collapse: collapse;
   min-width: 680px;
+}
+
+.selector-tab-panel-css .table-wrap,
+.selector-tab-panel-comments .table-wrap {
+  overflow-x: hidden;
+}
+
+.selector-tab-panel-css table,
+.selector-tab-panel-comments table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.selector-tab-panel-css th,
+.selector-tab-panel-css td,
+.selector-tab-panel-comments th,
+.selector-tab-panel-comments td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.selector-tab-panel-css .selector-table-css th:nth-child(1),
+.selector-tab-panel-css .selector-table-css td:nth-child(1) {
+  width: 84px;
+}
+
+.selector-tab-panel-css .selector-table-css th:nth-child(2),
+.selector-tab-panel-css .selector-table-css td:nth-child(2) {
+  width: 46%;
+}
+
+.selector-tab-panel-css .selector-table-css th:nth-child(3),
+.selector-tab-panel-css .selector-table-css td:nth-child(3) {
+  width: 54%;
+}
+
+.selector-tab-panel-comments .selector-table-comments th:nth-child(1),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(1) {
+  width: 48px;
+}
+
+.selector-tab-panel-comments .selector-table-comments th:nth-child(2),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(2) {
+  width: 132px;
+}
+
+.selector-tab-panel-comments .selector-table-comments th:nth-child(3),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(3) {
+  width: 96px;
+}
+
+.selector-tab-panel-comments .selector-table-comments th:nth-child(4),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(4) {
+  width: 52px;
+}
+
+.selector-tab-panel-comments .selector-table-comments th:nth-child(5),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(5) {
+  width: auto;
+}
+
+.selector-tab-panel-comments .selector-table-comments thead th,
+.selector-tab-panel-comments .selector-table-comments tbody td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.selector-tab-panel-comments .selector-table-comments td:nth-child(2),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(3),
+.selector-tab-panel-comments .selector-table-comments td:nth-child(4) {
+  white-space: nowrap;
+}
+
+.selector-tab-panel-comments .selector-table-comments td:nth-child(5) {
+  min-width: 360px;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  word-break: break-word;
 }
 
 thead th {

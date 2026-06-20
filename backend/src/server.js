@@ -293,6 +293,13 @@ app.post('/api/remove/:jobId', async (req, res) => {
 
     const paths = getJobPaths(jobId);
     const report = await readReport(paths.reportPath);
+    let existingManifest = {};
+    try {
+      const manifestRaw = await fs.readFile(paths.manifestPath, 'utf8');
+      existingManifest = JSON.parse(manifestRaw);
+    } catch {
+      existingManifest = {};
+    }
     await ensureCleanupBackup(paths);
     const allowedIds = new Set(report.entries.filter((entry) => entry.status === 'unused').map((entry) => entry.id));
     const allowedCommentIds = new Set((report.commentEntries || []).map((entry) => entry.id));
@@ -308,11 +315,31 @@ app.post('/api/remove/:jobId', async (req, res) => {
       ignoreLiquidDocComments
     });
 
+    const mergedCssSelectedIds = Array.from(new Set([
+      ...(Array.isArray(existingManifest.cssSelectedIds)
+        ? existingManifest.cssSelectedIds
+        : Array.isArray(existingManifest.selectedIds)
+          ? existingManifest.selectedIds
+          : []),
+      ...cssSelectedIds
+    ]));
+    const mergedCommentSelectedIds = Array.from(new Set([
+      ...(Array.isArray(existingManifest.commentSelectedIds)
+        ? existingManifest.commentSelectedIds
+        : Array.isArray(existingManifest.selectedCommentIds)
+          ? existingManifest.selectedCommentIds
+          : []),
+      ...commentSelectedIds
+    ]));
+
     await fs.writeFile(
       paths.manifestPath,
       JSON.stringify({
-        selectedIds: cssSelectedIds,
-        selectedCommentIds: commentSelectedIds,
+        ...existingManifest,
+        cssSelectedIds: mergedCssSelectedIds,
+        commentSelectedIds: mergedCommentSelectedIds,
+        selectedIds: mergedCssSelectedIds,
+        selectedCommentIds: mergedCommentSelectedIds,
         removeMode: mode,
         protectedPatterns,
         ignoreSmallComments,
@@ -418,6 +445,8 @@ app.post('/api/restore/:jobId', async (req, res) => {
     await fs.writeFile(
       paths.manifestPath,
       JSON.stringify({
+        cssSelectedIds: [],
+        commentSelectedIds: [],
         selectedIds: [],
         selectedCommentIds: [],
         removeMode: '',
@@ -519,8 +548,12 @@ app.get('/api/download/:jobId/report', async (req, res) => {
     const manifestRaw = await fs.readFile(paths.manifestPath, 'utf8');
     const manifest = JSON.parse(manifestRaw);
     const reportKind = String(req.query.kind || 'combined').toLowerCase();
-    const selectedIds = reportKind === 'comments' ? [] : (manifest.selectedIds || []);
-    const selectedCommentIds = reportKind === 'css' ? [] : (manifest.selectedCommentIds || []);
+    const selectedIds = reportKind === 'comments'
+      ? []
+      : (manifest.cssSelectedIds || manifest.selectedIds || []);
+    const selectedCommentIds = reportKind === 'css'
+      ? []
+      : (manifest.commentSelectedIds || manifest.selectedCommentIds || []);
     const filenamePrefix = reportKind === 'comments'
       ? 'comment-report'
       : reportKind === 'css'

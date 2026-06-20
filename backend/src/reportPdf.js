@@ -35,6 +35,58 @@ function wrapText(text, maxChars) {
   return lines.length > 0 ? lines : [''];
 }
 
+function breakLongToken(token, maxChars) {
+  const text = String(token || '');
+  if (!text) return [''];
+  if (text.length <= maxChars) return [text];
+
+  const chunks = [];
+  for (let index = 0; index < text.length; index += maxChars) {
+    chunks.push(text.slice(index, index + maxChars));
+  }
+  return chunks;
+}
+
+function wrapPathText(text, maxChars) {
+  const normalized = String(text || '').replace(/\\/g, '/');
+  const segments = normalized.split('/').filter((segment, index, list) => segment || index < list.length - 1);
+  const lines = [];
+  let current = '';
+
+  const pushCurrent = () => {
+    if (current) {
+      lines.push(current);
+      current = '';
+    }
+  };
+
+  for (const segment of segments) {
+    const pieces = breakLongToken(segment, maxChars);
+    for (let pieceIndex = 0; pieceIndex < pieces.length; pieceIndex += 1) {
+      const piece = pieces[pieceIndex];
+      const isLastPiece = pieceIndex === pieces.length - 1;
+      const token = isLastPiece ? piece : `${piece}-`;
+      const candidate = current ? `${current}/${token}` : token;
+
+      if (candidate.length > maxChars && current) {
+        pushCurrent();
+        current = token;
+      } else if (candidate.length > maxChars) {
+        lines.push(token);
+      } else {
+        current = candidate;
+      }
+
+      if (!isLastPiece) {
+        pushCurrent();
+      }
+    }
+  }
+
+  pushCurrent();
+  return lines.length > 0 ? lines : [''];
+}
+
 function splitCodeLines(text) {
   return String(text || '')
     .replace(/\r\n/g, '\n')
@@ -146,6 +198,31 @@ function groupByFile(entries) {
 function addCommentBadge(page, x, yTop, label) {
   addRect(page, x, yTop, 88, 18, 'EAF1FB', 'C8D7EB', 1);
   addText(page, label, x + 8, yTop + 4, { font: 'F2', size: 8.5, color: '1F4B99' });
+}
+
+function addWrappedFileHeader(page, filePath, yTop, { fillHex, borderHex, textHex, label } = {}) {
+  const safeLabel = label || 'Source file';
+  const fileLines = wrapPathText(filePath, 58);
+  const headerHeight = Math.max(34, 18 + fileLines.length * 13);
+
+  addRect(page, MARGIN_LEFT, yTop, CONTENT_WIDTH, headerHeight, fillHex || 'EAF1FB', borderHex || 'C8D7EB', 1);
+  addText(page, safeLabel, MARGIN_LEFT + 12, yTop + 7, {
+    font: 'F2',
+    size: 8.5,
+    color: textHex || '1F4B99'
+  });
+
+  let lineTop = yTop + 20;
+  for (const line of fileLines) {
+    addText(page, line, MARGIN_LEFT + 12, lineTop, {
+      font: 'F2',
+      size: 10,
+      color: textHex || '1F4B99'
+    });
+    lineTop += 13;
+  }
+
+  return headerHeight;
 }
 
 export function buildRemovalReportPdf({
@@ -265,10 +342,14 @@ export function buildRemovalReportPdf({
   }
 
   function addRemovedCssGroup(filePath, entries) {
-    ensureSpace(28 + 10);
-    addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 28, 'EAF1FB', 'C8D7EB', 1);
-    addText(currentPage(), filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 11, color: '1F4B99' });
-    consume(36);
+    const headerHeight = 10 + Math.max(34, 18 + wrapPathText(filePath, 58).length * 13);
+    ensureSpace(headerHeight + 10);
+    consume(addWrappedFileHeader(currentPage(), filePath, cursorY, {
+      fillHex: 'EAF1FB',
+      borderHex: 'C8D7EB',
+      textHex: '1F4B99',
+      label: 'Removed file'
+    }) + 10);
 
     for (const entry of entries) {
       const selectorHeight = 18;
@@ -285,10 +366,14 @@ export function buildRemovalReportPdf({
   }
 
   function addRemovedCommentGroup(filePath, entries) {
-    ensureSpace(28 + 10);
-    addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 28, 'F7F0FF', 'D7C6F7', 1);
-    addText(currentPage(), filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 11, color: '6B21A8' });
-    consume(36);
+    const headerHeight = 10 + Math.max(34, 18 + wrapPathText(filePath, 58).length * 13);
+    ensureSpace(headerHeight + 10);
+    consume(addWrappedFileHeader(currentPage(), filePath, cursorY, {
+      fillHex: 'F7F0FF',
+      borderHex: 'D7C6F7',
+      textHex: '6B21A8',
+      label: 'Comment source'
+    }) + 10);
 
     for (const entry of entries) {
       const badgeType = String(entry.commentType || 'comment');
@@ -339,38 +424,6 @@ export function buildRemovalReportPdf({
   addSpacer(10);
   addParagraph('The report includes removed CSS rules, removed comment blocks, performance recommendations, and CSS files that do not appear to be linked anywhere in the theme.', CONTENT_WIDTH, { size: 10 });
 
-  addSpacer(10);
-  addSectionHeader(currentPage(), 'Performance recommendations', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
-    subtitle: 'Shopify-focused suggestions generated from the uploaded theme'
-  });
-  consume(42);
-  addSpacer(10);
-  if (recommendations.length === 0) {
-    addParagraph('No performance recommendations were generated for this theme.', CONTENT_WIDTH, { size: 10 });
-  } else {
-    for (const recommendation of recommendations) {
-      addRecommendationCard(recommendation);
-    }
-  }
-
-  addSpacer(6);
-  addSectionHeader(currentPage(), 'CSS files not linked anywhere', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
-    subtitle: 'Files that do not appear to be referenced in the scanned theme code'
-  });
-  consume(42);
-  addSpacer(10);
-  if (unusedCssFiles.length === 0) {
-    addParagraph('No completely unlinked CSS files were found.', CONTENT_WIDTH, { size: 10 });
-  } else {
-    for (const file of unusedCssFiles) {
-      ensureSpace(34);
-      addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 34, 'F7FAFD', 'D7E0EA', 1);
-      addText(currentPage(), file.filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 10.5, color: '1F2937' });
-      addText(currentPage(), `${Math.round((file.bytes || 0) / 1024)} KB`, MARGIN_LEFT + 12, cursorY + 21, { font: 'F1', size: 9.5, color: '64748B' });
-      consume(42);
-    }
-  }
-
   if (includeCssSection) {
     addSpacer(8);
     addSectionHeader(currentPage(), 'Removed CSS rules', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
@@ -402,6 +455,38 @@ export function buildRemovalReportPdf({
         addRemovedCommentGroup(filePath, entries);
         addSpacer(8);
       }
+    }
+  }
+
+  addSpacer(10);
+  addSectionHeader(currentPage(), 'Performance recommendations', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
+    subtitle: 'Shopify-focused suggestions generated from the uploaded theme'
+  });
+  consume(42);
+  addSpacer(10);
+  if (recommendations.length === 0) {
+    addParagraph('No performance recommendations were generated for this theme.', CONTENT_WIDTH, { size: 10 });
+  } else {
+    for (const recommendation of recommendations) {
+      addRecommendationCard(recommendation);
+    }
+  }
+
+  addSpacer(6);
+  addSectionHeader(currentPage(), 'CSS files not linked anywhere', MARGIN_LEFT, cursorY, CONTENT_WIDTH, {
+    subtitle: 'Files that do not appear to be referenced in the scanned theme code'
+  });
+  consume(42);
+  addSpacer(10);
+  if (unusedCssFiles.length === 0) {
+    addParagraph('No completely unlinked CSS files were found.', CONTENT_WIDTH, { size: 10 });
+  } else {
+    for (const file of unusedCssFiles) {
+      ensureSpace(34);
+      addRect(currentPage(), MARGIN_LEFT, cursorY, CONTENT_WIDTH, 34, 'F7FAFD', 'D7E0EA', 1);
+      addText(currentPage(), file.filePath, MARGIN_LEFT + 12, cursorY + 8, { font: 'F2', size: 10.5, color: '1F2937' });
+      addText(currentPage(), `${Math.round((file.bytes || 0) / 1024)} KB`, MARGIN_LEFT + 12, cursorY + 21, { font: 'F1', size: 9.5, color: '64748B' });
+      consume(42);
     }
   }
 

@@ -2,6 +2,8 @@
 
 A full-stack Shopify theme cleanup app that scans your uploaded theme, finds unused CSS selectors, commented code, and unlinked CSS/JS files, then lets you remove only what you approve.
 
+CSS removal is not supported for Tailwind CSS projects. Do not use the CSS Removal option on projects that use Tailwind CSS, as the tool may incorrectly identify and remove classes generated or used dynamically by Tailwind.
+
 ## What it does
 
 - Upload a Shopify theme folder, files, or a ZIP archive

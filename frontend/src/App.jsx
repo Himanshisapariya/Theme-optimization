@@ -1387,82 +1387,75 @@ export default function App() {
   return (
     <div className="app-shell">
       <main className="container">
-        <section className="hero">
-          <div>
-            <p className="eyebrow">Shopify theme cleanup automation</p>
-            <h1>Scan and review your theme</h1>
-            <p className="subcopy">
-              Upload a theme folder, CSS files, or a ZIP. The scanner checks `.liquid`, `.html`, and `.js`
-              files and protects dynamic Shopify classes from accidental deletion.
-            </p>
+        <header className="app-topbar">
+          <div className="app-brand">
+            <span className="app-brand-mark" aria-hidden="true">TP</span>
+            <strong>ThemePurify</strong>
           </div>
+          <nav className="app-nav" aria-label="Primary">
+            <span className="app-nav-item app-nav-item-active">Dashboard</span>
+            <span className="app-nav-item">Scans</span>
+            <span className="app-nav-item">Settings</span>
+          </nav>
+          <div className="app-topbar-actions" aria-hidden="true">
+            <span className="topbar-icon">◦</span>
+            <span className="topbar-icon">?</span>
+            <span className="topbar-button">New Scan</span>
+            <span className="avatar-badge">HP</span>
+          </div>
+        </header>
 
-          <div className="status-card">
-            <span className={`status-pill status-${step}`}>{step}</span>
-            <p>{message}</p>
-            {loading ? (
-              <div className="loader" aria-label="Loading">
-                <span />
-                <span />
-                <span />
-              </div>
-            ) : null}
-            <div className="status-meta">
-              <span>{files.length} uploaded file(s)</span>
-              <span>{jobId ? `Job ${jobId.slice(0, 8)}` : 'No job yet'}</span>
-              <span>{localFolderName ? `Local folder: ${localFolderName}` : 'No local folder selected'}</span>
-            </div>
+        <div className="status-bar">
+          <span className={`status-pill status-${step}`}>{step}</span>
+          <span className="status-bar-message">{message}</span>
+          {loading ? (
+            <div className="loader" aria-label="Loading"><span /><span /><span /></div>
+          ) : null}
+          <div className="status-meta">
+            <span>{files.length} file(s) uploaded</span>
+            <span>{jobId ? `Job ${jobId.slice(0, 8)}` : '—'}</span>
+            {localFolderName ? <span>📁 {localFolderName}</span> : null}
           </div>
-        </section>
+        </div>
 
         <section className="grid">
           <div className="panel upload-panel">
-            <h2>Upload</h2>
-            <div className="upload-options">
-              <label className="upload-button">
-                <input
-                  key={`single-${inputKey}`}
-                  type="file"
-                  multiple
-                  accept=".css,.liquid,.html,.js,.zip"
-                  onChange={handleUpload}
-                  className="file-input"
-                />
-                <span>Upload files</span>
-              </label>
-              <button className="upload-button" type="button" onClick={handleFolderButtonClick}>
-                <span>Upload folder</span>
-              </button>
-              <input
-                ref={folderInputRef}
-                type="file"
-                multiple
-                webkitdirectory=""
-                directory=""
-                onChange={handleFolderInputChange}
-                className="file-input"
-                style={{ display: 'none' }}
-              />
-            </div>
+            <h2>Upload Theme</h2>
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              webkitdirectory=""
+              directory=""
+              onChange={handleFolderInputChange}
+              style={{ display: 'none' }}
+            />
             <div
               className={`dropzone ${dropActive ? 'dropzone-active' : ''}`}
-              onDragEnter={(event) => {
-                event.preventDefault();
-                setDropActive(true);
-              }}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDropActive(true);
-              }}
-              onDragLeave={(event) => {
-                event.preventDefault();
-                setDropActive(false);
-              }}
+              onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }}
+              onDragOver={(event) => { event.preventDefault(); setDropActive(true); }}
+              onDragLeave={(event) => { event.preventDefault(); setDropActive(false); }}
               onDrop={handleDrop}
             >
+              <div className="dropzone-icon">☁</div>
               <div className="dropzone-copy">
-                <strong>Drag and drop files or a folder here</strong>
-                <span>Supports single files, theme folders, CSS, Liquid, HTML, JS, and ZIP uploads</span>
+                <strong>Drag and drop your Shopify theme folder or ZIP</strong>
+                <span>Support for .liquid, .html, .css, .js and .zip archives</span>
+              </div>
+              <div className="dropzone-actions">
+                <button className="upload-button" type="button" onClick={handleFolderButtonClick}>
+                  📁 Upload Folder
+                </button>
+                <label className="upload-button upload-button-primary">
+                  <input
+                    key={`zip-${inputKey}`}
+                    type="file"
+                    accept=".zip"
+                    onChange={handleUpload}
+                    className="file-input"
+                  />
+                  ⬆ Upload ZIP
+                </label>
               </div>
             </div>
 
@@ -1472,8 +1465,13 @@ export default function App() {
               ) : (
                 files.map(({ file, relativePath }) => (
                   <div key={`${relativePath}-${file.size}-${file.lastModified}`} className="file-row">
-                    <span>{relativePath}</span>
-                    <span>{formatBytes(file.size)}</span>
+                    <span className="file-row-name">{relativePath}</span>
+                    <span className="file-row-meta">
+                      <span>{formatBytes(file.size)}</span>
+                      <span className={`badge ${step === 'uploaded' || step === 'scanned' || step === 'removed' || step === 'applied' ? 'badge-ready' : 'badge-archived'}`}>
+                        {step === 'idle' ? 'pending' : 'ready'}
+                      </span>
+                    </span>
                   </div>
                 ))
               )}
@@ -1490,7 +1488,53 @@ export default function App() {
           </div>
 
           <div className="panel summary-panel">
-            <h2>Report</h2>
+            <h2>Scan Summary</h2>
+
+            <div className="summary-stats-row">
+              <div className="summary-stat">
+                <span className="summary-stat-label">Total Selectors</span>
+                <span className="summary-stat-value">{summary.totalRules + cssReportEntries.length}</span>
+              </div>
+              <div className="summary-stat">
+                <span className="summary-stat-label">Unused Selectors</span>
+                <span className="summary-stat-value accent">{summary.unusedRules}</span>
+              </div>
+              <div className="summary-stat">
+                <span className="summary-stat-label">Commented Blocks</span>
+                <span className="summary-stat-value">{commentEntries.length + commentReportEntries.length}</span>
+              </div>
+              <div className="summary-stat">
+                <span className="summary-stat-label">Potential Savings</span>
+                <span className="summary-stat-value accent">{formatBytes(summary.estimatedSavingsBytes)}</span>
+              </div>
+              <div className="summary-stat">
+                <span className="summary-stat-label">Scan Warnings</span>
+                <span className="summary-stat-value">{scanWarnings.length}</span>
+              </div>
+            </div>
+
+            <div className="summary-action-row">
+              <div className="summary-action-stats">
+                <div className="summary-action-stat">
+                  <span className="summary-action-stat-label">Files Scanned</span>
+                  <span className="summary-action-stat-value accent">{files.length}</span>
+                </div>
+                <div className="summary-action-stat">
+                  <span className="summary-action-stat-label">Bytes Saved</span>
+                  <span className="summary-action-stat-value accent">{formatBytes(summary.estimatedSavingsBytes)}</span>
+                </div>
+                <div className="summary-action-stat">
+                  <span className="summary-action-stat-label">Selected for Removal</span>
+                  <span className="summary-action-stat-value">{selectedIdsForRemoval.size}</span>
+                </div>
+              </div>
+              <div className="summary-action-buttons">
+                <button className="secondary" onClick={() => handleDownload('optimized')} disabled={!(step === 'removed' || step === 'applied')}>
+                  Download Cleaned Theme
+                </button>
+              </div>
+            </div>
+
             <div className="report-tabs" role="tablist" aria-label="Report sections">
               <button
                 type="button"
@@ -1815,7 +1859,7 @@ export default function App() {
         <section className="panel table-panel">
           <div className="table-head">
             <div>
-              <h2>Selectors</h2>
+              <h2>Review &amp; Cleanup</h2>
               <p>Use the tab-specific remove button to delete only CSS selectors or only comments.</p>
             </div>
           </div>
@@ -1829,7 +1873,7 @@ export default function App() {
                 role="tab"
                 aria-selected={selectorTab === 'css'}
               >
-                Removable CSS
+                Unused CSS
                 <span>{removableUnusedEntries.length}</span>
               </button>
               <button
@@ -1839,7 +1883,7 @@ export default function App() {
                 role="tab"
                 aria-selected={selectorTab === 'comments'}
               >
-                Commented code
+                Commented Code
                 <span>{commentEntries.length}</span>
               </button>
               <button
@@ -1859,9 +1903,29 @@ export default function App() {
                 role="tab"
                 aria-selected={selectorTab === 'files'}
               >
-                Files not linked anywhere
+                Unlinked Files
                 <span>{unusedCssFiles.length + unusedJsFiles.length}</span>
               </button>
+              {scanWarnings.length > 0 ? (
+                <button
+                  type="button"
+                  className={`selector-tab ${selectorTab === 'warnings' ? 'selector-tab-active' : ''}`}
+                  onClick={() => setSelectorTab('warnings')}
+                  role="tab"
+                  aria-selected={selectorTab === 'warnings'}
+                >
+                  Warnings
+                  <span>{scanWarnings.length}</span>
+                </button>
+              ) : null}
+            </div>
+            <div className="selector-tabs-filter">
+              <input
+                type="search"
+                placeholder="Filter selectors…"
+                value={ignoredFilter}
+                onChange={(event) => setIgnoredFilter(event.target.value)}
+              />
             </div>
           </div>
 
@@ -1994,18 +2058,33 @@ export default function App() {
                         </div>
 
                         <div className="table-wrap">
-                          <table className="selector-table selector-table-comments">
+                          <table className="selector-table selector-table-css">
                             <thead>
                               <tr>
-                                <th>Remove</th>
-                                <th>Selector</th>
-                                <th>File name</th>
+                                <th>
+                                  <input
+                                    type="checkbox"
+                                    checked={removableUnusedEntries.length > 0 && removableUnusedEntries.every((e) => selectedIds.has(e.id))}
+                                    onChange={() => {
+                                      const allSelected = removableUnusedEntries.every((e) => selectedIds.has(e.id));
+                                      setSelectedIds((current) => {
+                                        const next = new Set(current);
+                                        removableUnusedEntries.forEach((e) => allSelected ? next.delete(e.id) : next.add(e.id));
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                </th>
+                                <th>Selector Name</th>
+                                <th>File Path</th>
+                                <th>Size</th>
+                                <th>Status</th>
                               </tr>
                             </thead>
                             <tbody>
                               {removableUnusedEntries.length === 0 ? (
                                 <tr>
-                                  <td colSpan="3" className="empty-state">
+                                  <td colSpan="5" className="empty-state">
                                     No removable unused selectors found.
                                   </td>
                                 </tr>
@@ -2020,7 +2099,9 @@ export default function App() {
                                       />
                                     </td>
                                     <td className="selector-cell">{entry.selector}</td>
-                                    <td>{entry.fileName}</td>
+                                    <td>{entry.filePath || entry.fileName}</td>
+                                    <td>{formatBytes(entry.estimatedBytes || 0)}</td>
+                                    <td><span className="badge badge-unused">Unused</span></td>
                                   </tr>
                                 ))
                               )}
@@ -2257,6 +2338,21 @@ export default function App() {
                   </section>
                 ) : null}
                 </div>
+              </div>
+            ) : selectorTab === 'warnings' ? (
+              <div className="selector-tab-panel">
+                {scanWarnings.length === 0 ? (
+                  <p className="empty-state">No scan warnings.</p>
+                ) : (
+                  <div className="warning-list" style={{ gridTemplateColumns: '1fr' }}>
+                    {scanWarnings.map((warning, index) => (
+                      <li key={warning.filePath + '-' + warning.sourceType + '-' + index}>
+                        <strong>{warning.filePath}</strong>
+                        <span>{warning.message}</span>
+                      </li>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : selectorTab === 'files' ? (
               <div className="selector-tab-panel selector-tab-panel-files">
@@ -2512,6 +2608,23 @@ export default function App() {
             )}
           </div>
         </section>
+
+        {scanWarnings.length > 0 ? (
+          <section className="critical-warnings">
+            <h2>Critical Warnings</h2>
+            <div className="critical-warnings-grid">
+              {scanWarnings.map((warning, index) => (
+                <div key={warning.filePath + '-' + index} className="critical-warning-card">
+                  <div className="critical-warning-icon">⚠</div>
+                  <div className="critical-warning-body">
+                    <strong>{warning.filePath}</strong>
+                    <p>{warning.message}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </main>
     </div>
   );

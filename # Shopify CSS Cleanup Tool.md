@@ -2,8 +2,6 @@
 
 A full-stack Shopify theme cleanup app that scans your uploaded theme, finds unused CSS selectors, commented code, and unlinked CSS/JS files, then lets you remove only what you approve.
 
-CSS removal is not supported for Tailwind CSS projects. Do not use the CSS Removal option on projects that use Tailwind CSS, as the tool may incorrectly identify and remove classes generated or used dynamically by Tailwind.
-
 ## What it does
 
 - Upload a Shopify theme folder, files, or a ZIP archive
@@ -82,18 +80,24 @@ npm install
 npm run dev
 ```
 
-3. Open the Vite URL shown in the terminal.
+   3. Open the frontend URL shown in the terminal.
 
-## If you see a port error
+   ## Running locally
 
-If you get `EADDRINUSE` for port `3001`, another backend process is already running. Stop the existing process and run `npm run dev` again.
+   - The backend runs on `http://127.0.0.1:3001`
+   - The frontend usually runs on `http://127.0.0.1:5173`
+   - If `5173` is already in use, Vite may automatically switch to another port such as `5174`
 
-If you want to start the backend and frontend separately, use:
+   ## If you see a port error
 
-```bash
-npm run dev:backend
-npm run dev:frontend
-```
+   If you get `EADDRINUSE` for port `3001`, another backend process is already running. Stop the existing process and run `npm run dev` again.
+
+   If you want to start the backend and frontend separately, use:
+
+   ```bash
+   npm run dev:backend
+   npm run dev:frontend
+   ```
 
 ## Typical workflow
 
@@ -110,4 +114,4 @@ In supported browsers, the app can write the cleaned files directly back into a 
 
 ## Notes
 
-- This is a beginner-friendly starter project, so double check everything before use in actual projects. It currnelty gives 70%-80% accurate results.
+- This is a beginner-friendly starter project, so double check anything before removal

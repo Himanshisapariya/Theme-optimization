@@ -8,6 +8,15 @@ const initialSummary = {
 };
 
 const PROTECTED_PRESETS_STORAGE_KEY = 'css-analyser-protected-presets-v1';
+const DEFAULT_PROTECTED_SELECTOR_PATTERNS = [
+  'swiper',
+  'slider',
+  'form',
+  'page-width',
+  '--left',
+  '--right',
+  '--center'
+];
 const DEFAULT_EXPANDED_RECOMMENDATIONS = new Set(['image-dimensions', 'image-lazy-load']);
 
 function formatBytes(bytes) {
@@ -45,19 +54,41 @@ function groupEntriesByFile(entries) {
   }, new Map());
 }
 
+function classTokenMatchesPattern(token, pattern) {
+  const normalizedToken = String(token || '').toLowerCase();
+  const normalizedPattern = String(pattern || '').toLowerCase();
+  if (!normalizedToken || !normalizedPattern) return false;
+  if (normalizedPattern.startsWith('--')) {
+    return normalizedToken.includes(normalizedPattern);
+  }
+  if (normalizedToken === normalizedPattern) {
+    return true;
+  }
+  const escaped = normalizedPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[-_])${escaped}($|[-_])`, 'i').test(normalizedToken);
+}
+
 function selectorMatchesProtected(selector, patterns) {
   const normalizedSelector = String(selector || '');
   if (!normalizedSelector) return false;
+  const normalizedLower = normalizedSelector.toLowerCase();
+  const classTokens = Array.from(normalizedSelector.matchAll(/\.([_a-zA-Z0-9-]+)/g), (match) => match[1].toLowerCase());
 
   return patterns.some((rawPattern) => {
     const pattern = String(rawPattern || '').trim();
     if (!pattern) return false;
-    if (normalizedSelector.includes(pattern)) return true;
+    const lowerPattern = pattern.toLowerCase();
+    const looksLikeSelector = /[.#\s>+~\[:]/.test(pattern);
 
-    const barePattern = pattern.replace(/^[.#\s]+/, '');
-    if (!barePattern) return false;
+    if (looksLikeSelector) {
+      return normalizedSelector.includes(pattern) || normalizedLower.includes(lowerPattern);
+    }
 
-    return normalizedSelector.includes(barePattern);
+    if (classTokens.some((token) => classTokenMatchesPattern(token, lowerPattern))) {
+      return true;
+    }
+
+    return normalizedLower.includes(`.${lowerPattern}`) || normalizedLower.includes(`#${lowerPattern}`);
   });
 }
 
@@ -418,7 +449,7 @@ export default function App() {
   const [localFolderName, setLocalFolderName] = useState('');
   const [localFolderMode, setLocalFolderMode] = useState('none');
   const [protectedSelectorsText, setProtectedSelectorsText] = useState('');
-  const [protectedSelectors, setProtectedSelectors] = useState([]);
+  const [protectedSelectors, setProtectedSelectors] = useState(() => [...DEFAULT_PROTECTED_SELECTOR_PATTERNS]);
   const [ignoredFilter, setIgnoredFilter] = useState('');
   const [presetName, setPresetName] = useState('');
   const [savedProtectedPresets, setSavedProtectedPresets] = useState(() => readProtectedPresets());
@@ -537,12 +568,13 @@ export default function App() {
   }
 
   function clearProtectedSelectors() {
-    setProtectedSelectors([]);
+    setProtectedSelectors([...DEFAULT_PROTECTED_SELECTOR_PATTERNS]);
     setProtectedSelectorsText('');
     setActivePresetName('');
   }
 
   function removeProtectedSelector(value) {
+    if (DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value)) return;
     setProtectedSelectors((current) => current.filter((item) => item !== value));
   }
 
@@ -569,7 +601,7 @@ export default function App() {
     const preset = findSavedProtectedPreset(name);
     if (!preset) return;
 
-    setProtectedSelectors([...preset.patterns]);
+    setProtectedSelectors(normalizeProtectedSelectors([...DEFAULT_PROTECTED_SELECTOR_PATTERNS, ...preset.patterns]));
     setPresetName(preset.name);
     setActivePresetName(preset.name);
     setProtectedSelectorsText('');
@@ -1841,9 +1873,10 @@ export default function App() {
                             <button
                               key={value}
                               type="button"
-                              className="protected-tag"
+                              className={`protected-tag ${DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value) ? 'protected-tag-default' : ''}`}
                               onClick={() => removeProtectedSelector(value)}
-                              title="Click to remove"
+                              disabled={DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value)}
+                              title={DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value) ? 'Built-in default ignore pattern' : 'Click to remove'}
                             >
                               <span>{value}</span>
                               <span aria-hidden="true">×</span>

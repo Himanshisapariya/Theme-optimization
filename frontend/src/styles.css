@@ -1058,6 +1058,15 @@ select:focus {
   border-color: rgba(139, 92, 246, 0.35);
 }
 
+.protected-tag:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.protected-tag-default {
+  border-style: dashed;
+}
+
 .protected-tag span:first-child {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.86rem;

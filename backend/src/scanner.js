@@ -19,6 +19,15 @@ const INLINE_STYLE_REGEX = /\sstyle=["'][^"']*["']/gi;
 const FONT_FACE_REGEX = /@font-face\b/gi;
 
 const LIQUID_DOC_COMMENT_PATTERN = /Accepts:|Usage:/i;
+const DEFAULT_PROTECTED_SELECTOR_PATTERNS = [
+  'swiper',
+  'slider',
+  'form',
+  'page-width',
+  '--left',
+  '--right',
+  '--center'
+];
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -102,29 +111,57 @@ function isFileReferencedInCorpus(relativePath, matcher) {
 }
 
 function normalizeProtectedPatterns(patterns) {
-  if (!Array.isArray(patterns)) return [];
-  return patterns
-    .map((pattern) => String(pattern || '').trim())
-    .filter(Boolean);
+  const merged = [
+    ...DEFAULT_PROTECTED_SELECTOR_PATTERNS,
+    ...(Array.isArray(patterns) ? patterns : [])
+  ];
+  return [...new Set(
+    merged
+      .map((pattern) => String(pattern || '').trim())
+      .filter(Boolean)
+  )];
+}
+
+function classTokenMatchesPattern(token, pattern) {
+  const normalizedToken = String(token || '').toLowerCase();
+  const normalizedPattern = String(pattern || '').toLowerCase();
+  if (!normalizedToken || !normalizedPattern) return false;
+  if (normalizedPattern.startsWith('--')) {
+    return normalizedToken.includes(normalizedPattern);
+  }
+  if (normalizedToken === normalizedPattern) {
+    return true;
+  }
+  return new RegExp(`(^|[-_])${escapeRegExp(normalizedPattern)}($|[-_])`, 'i').test(normalizedToken);
 }
 
 function selectorMatchesProtected(selector, protectedPatterns) {
   const normalizedSelector = String(selector || '');
   if (!normalizedSelector || protectedPatterns.length === 0) return false;
+  const normalizedLower = normalizedSelector.toLowerCase();
+  const classTokens = extractTokensFromSelector(normalizedSelector)
+    .filter((token) => token.type === 'class')
+    .map((token) => String(token.value || '').toLowerCase());
 
   for (const rawPattern of protectedPatterns) {
     const pattern = String(rawPattern || '').trim();
     if (!pattern) continue;
 
-    if (normalizedSelector.includes(pattern)) {
+    const lowerPattern = pattern.toLowerCase();
+    const looksLikeSelector = /[.#\s>+~\[:]/.test(pattern);
+
+    if (looksLikeSelector) {
+      if (normalizedSelector.includes(pattern) || normalizedLower.includes(lowerPattern)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (classTokens.some((token) => classTokenMatchesPattern(token, lowerPattern))) {
       return true;
     }
 
-    const barePattern = pattern.replace(/^[.#\s]+/, '');
-    if (!barePattern) continue;
-
-    const boundary = buildBoundaryPattern(barePattern);
-    if (boundary.test(normalizedSelector)) {
+    if (normalizedLower.includes(`.${lowerPattern}`) || normalizedLower.includes(`#${lowerPattern}`)) {
       return true;
     }
   }
@@ -429,8 +466,85 @@ function removeCommentEntriesFromText(content, commentEntries) {
   return next;
 }
 
+function extractOpeningTag(content, tagName, startIndex) {
+  const text = String(content || '');
+  const lowerTagName = String(tagName || '').toLowerCase();
+  let quoteChar = null;
+  let liquidClose = null;
+
+  for (let index = startIndex; index < text.length; index += 1) {
+    const current = text[index];
+    const next = text[index + 1];
+
+    if (liquidClose) {
+      if (current === liquidClose[0] && next === liquidClose[1]) {
+        liquidClose = null;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (quoteChar) {
+      if (current === quoteChar) {
+        quoteChar = null;
+      }
+      continue;
+    }
+
+    if (current === '"' || current === '\'') {
+      quoteChar = current;
+      continue;
+    }
+
+    if (current === '{' && next === '{') {
+      liquidClose = ['}', '}'];
+      index += 1;
+      continue;
+    }
+
+    if (current === '{' && next === '%') {
+      liquidClose = ['%', '}'];
+      index += 1;
+      continue;
+    }
+
+    if (current === '>') {
+      return { tag: text.slice(startIndex, index + 1), endIndex: index + 1 };
+    }
+
+    if (current === '<' && index !== startIndex) {
+      const maybeTag = text.slice(index + 1, index + 1 + lowerTagName.length).toLowerCase();
+      if (maybeTag === lowerTagName) {
+        return { tag: text.slice(startIndex, index), endIndex: index };
+      }
+    }
+  }
+
+  return { tag: text.slice(startIndex), endIndex: text.length };
+}
+
+function extractTags(content, tagName) {
+  const text = String(content || '');
+  const pattern = new RegExp(`<${escapeRegExp(tagName)}\\b`, 'gi');
+  const tags = [];
+  let match;
+
+  while ((match = pattern.exec(text))) {
+    const extracted = extractOpeningTag(text, tagName, match.index);
+    if (extracted?.tag) {
+      tags.push({
+        tag: extracted.tag,
+        startIndex: match.index,
+        endIndex: extracted.endIndex
+      });
+    }
+  }
+
+  return tags;
+}
+
 function hasAttribute(tag, attributeName) {
-  const attributePattern = new RegExp(`\\b${escapeRegExp(attributeName)}\\s*=`, 'i');
+  const attributePattern = new RegExp(`(?:^|\\s)${escapeRegExp(attributeName)}(?:\\s*=|\\s|>|$)`, 'i');
   return attributePattern.test(tag);
 }
 
@@ -754,19 +868,18 @@ export async function scanWorkspace(sourceDir) {
       commentIndex = commentEntries.length;
 
       tracker.markupFileCount += 1;
-      tracker.iframeTags += countMatches(content, IFRAME_TAG_REGEX);
+      const iframeTags = extractTags(content, 'iframe');
+      tracker.iframeTags += iframeTags.length;
       tracker.stylesheetLinks += countMatches(content, LINK_STYLESHEET_REGEX);
       tracker.scriptSrcTags += countMatches(content, SCRIPT_SRC_REGEX);
       tracker.inlineStyleAttributes += countMatches(content, INLINE_STYLE_REGEX);
 
       const missingDimsLines = [];
       const missingLazyLines = [];
-      const imgRegex = /<img\b[^>]*>/gi;
-      let imgMatch;
-      while ((imgMatch = imgRegex.exec(content)) !== null) {
+      const imgTags = extractTags(content, 'img');
+      for (const { tag, startIndex } of imgTags) {
         tracker.imageTags += 1;
-        const tag = imgMatch[0];
-        const lineNumber = content.slice(0, imgMatch.index).split('\n').length;
+        const lineNumber = content.slice(0, startIndex).split('\n').length;
         if (!hasAttribute(tag, 'width') || !hasAttribute(tag, 'height')) {
           tracker.imageTagsMissingDimensions += 1;
           missingDimsLines.push(lineNumber);
@@ -783,7 +896,7 @@ export async function scanWorkspace(sourceDir) {
         tracker.imagesMissingLazy.push({ filePath: relativePath, fileName: path.basename(relativePath), lines: missingLazyLines });
       }
 
-      for (const tag of String(content || '').match(IFRAME_TAG_REGEX) || []) {
+      for (const { tag } of iframeTags) {
         const lowerTag = tag.toLowerCase();
         if (!/loading\s*=\s*["']lazy["']/i.test(lowerTag)) {
           tracker.iframeTagsMissingLazy += 1;

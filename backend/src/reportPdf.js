@@ -298,6 +298,49 @@ export function buildRemovalReportPdf({
     return height;
   }
 
+  function addPagedCodeBlock(text, x, width, {
+    font = 'F3',
+    size = 9,
+    color = '1F2937',
+    lineHeight = 12,
+    paddingTop = 12,
+    paddingBottom = 10,
+    paddingLeft = 12
+  } = {}) {
+    const codeLines = splitCodeLines(text);
+    let remainingLines = [...codeLines];
+    let totalHeight = 0;
+
+    while (remainingLines.length > 0) {
+      const availableHeight = PDF_HEIGHT - 36 - cursorY;
+      const minBlockHeight = paddingTop + paddingBottom + lineHeight;
+
+      if (availableHeight < minBlockHeight) {
+        newPage();
+        continue;
+      }
+
+      const availableLineSpace = availableHeight - paddingTop - paddingBottom;
+      const maxLines = Math.max(1, Math.floor(availableLineSpace / lineHeight));
+      const chunkLines = remainingLines.slice(0, maxLines);
+      const chunkHeight = paddingTop + paddingBottom + chunkLines.length * lineHeight;
+
+      addRect(currentPage(), x, cursorY, width, chunkHeight, 'F6F8FB', 'D7E0EA', 1);
+
+      let lineTop = cursorY + paddingTop;
+      for (const line of chunkLines) {
+        addText(currentPage(), line, x + paddingLeft, lineTop, { font, size, color });
+        lineTop += lineHeight;
+      }
+
+      consume(chunkHeight);
+      totalHeight += chunkHeight;
+      remainingLines = remainingLines.slice(chunkLines.length);
+    }
+
+    return totalHeight;
+  }
+
   function addSummaryCards() {
     const cardWidth = (CONTENT_WIDTH - 12) / 2;
     const cardHeight = 58;
@@ -353,15 +396,12 @@ export function buildRemovalReportPdf({
 
     for (const entry of entries) {
       const selectorHeight = 18;
-      const codeLines = splitCodeLines(entry.ruleText || entry.selector);
-      const codeHeight = 12 + 10 + codeLines.length * 12;
-      const blockHeight = selectorHeight + codeHeight + 14;
-      ensureSpace(blockHeight);
+      ensureSpace(selectorHeight + 24);
 
       addText(currentPage(), entry.selector, MARGIN_LEFT + 12, cursorY + 2, { font: 'F2', size: 11, color: '0F172A' });
       consume(selectorHeight);
-      addCodeBlock(currentPage(), entry.ruleText || entry.selector, MARGIN_LEFT + 12, cursorY, CONTENT_WIDTH - 24);
-      consume(codeHeight + 8);
+      addPagedCodeBlock(entry.ruleText || entry.selector, MARGIN_LEFT + 12, CONTENT_WIDTH - 24);
+      addSpacer(8);
     }
   }
 
@@ -377,12 +417,12 @@ export function buildRemovalReportPdf({
 
     for (const entry of entries) {
       const badgeType = String(entry.commentType || 'comment');
-      ensureSpace(18 + 18);
+      ensureSpace(18 + 24);
 
       addCommentBadge(currentPage(), MARGIN_LEFT + 12, cursorY + 2, badgeType);
       consume(22);
-      const codeHeight = addCodeBlock(currentPage(), entry.commentText || entry.commentPreview || '', MARGIN_LEFT + 12, cursorY, CONTENT_WIDTH - 24);
-      consume(codeHeight + 8);
+      addPagedCodeBlock(entry.commentText || entry.commentPreview || '', MARGIN_LEFT + 12, CONTENT_WIDTH - 24);
+      addSpacer(8);
     }
   }
 

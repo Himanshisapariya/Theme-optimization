@@ -19,11 +19,25 @@ const INLINE_STYLE_REGEX = /\sstyle=["'][^"']*["']/gi;
 const FONT_FACE_REGEX = /@font-face\b/gi;
 
 const LIQUID_DOC_COMMENT_PATTERN = /Accepts:|Usage:/i;
+const TAILWIND_CONFIG_FILE_REGEX = /(?:^|\/)tailwind\.config\.(?:js|cjs|mjs|ts)$/i;
+const TAILWIND_CSS_DIRECTIVE_REGEX = /@tailwind\s+(base|components|utilities)\b/i;
+const TAILWIND_IMPORT_REGEX = /@import\s+["']tailwindcss(?:\/[^"']+)?["']/i;
 const DEFAULT_PROTECTED_SELECTOR_PATTERNS = [
   'swiper',
   'slider',
   'form',
   'page-width',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  '.h0',
+  '.h1',
+  '.h2',
+  '.h3',
+  '.h4',
+  '.h5',
   '--left',
   '--right',
   '--center'
@@ -135,12 +149,21 @@ function classTokenMatchesPattern(token, pattern) {
   return new RegExp(`(^|[-_])${escapeRegExp(normalizedPattern)}($|[-_])`, 'i').test(normalizedToken);
 }
 
+function tagTokenMatchesPattern(token, pattern) {
+  const normalizedToken = String(token || '').toLowerCase();
+  const normalizedPattern = String(pattern || '').toLowerCase();
+  return Boolean(normalizedToken && normalizedPattern && normalizedToken === normalizedPattern);
+}
+
 function selectorMatchesProtected(selector, protectedPatterns) {
   const normalizedSelector = String(selector || '');
   if (!normalizedSelector || protectedPatterns.length === 0) return false;
   const normalizedLower = normalizedSelector.toLowerCase();
   const classTokens = extractTokensFromSelector(normalizedSelector)
     .filter((token) => token.type === 'class')
+    .map((token) => String(token.value || '').toLowerCase());
+  const tagTokens = extractTokensFromSelector(normalizedSelector)
+    .filter((token) => token.type === 'tag')
     .map((token) => String(token.value || '').toLowerCase());
 
   for (const rawPattern of protectedPatterns) {
@@ -158,6 +181,10 @@ function selectorMatchesProtected(selector, protectedPatterns) {
     }
 
     if (classTokens.some((token) => classTokenMatchesPattern(token, lowerPattern))) {
+      return true;
+    }
+
+    if (tagTokens.some((token) => tagTokenMatchesPattern(token, lowerPattern))) {
       return true;
     }
 
@@ -555,6 +582,8 @@ function countMatches(source, regex) {
 
 function createPerformanceTracker() {
   return {
+    tailwindDetected: false,
+    tailwindEvidence: [],
     cssFileCount: 0,
     cssBytes: 0,
     jsFileCount: 0,
@@ -726,6 +755,19 @@ function buildPerformanceRecommendations(report, tracker) {
   return recommendations;
 }
 
+function markTailwindSignal(tracker, filePath, reason) {
+  tracker.tailwindDetected = true;
+  if (!Array.isArray(tracker.tailwindEvidence)) {
+    tracker.tailwindEvidence = [];
+  }
+  if (tracker.tailwindEvidence.length < 5) {
+    tracker.tailwindEvidence.push({
+      filePath,
+      reason
+    });
+  }
+}
+
 function scanCssSource(cssText, sourceMeta, matcher) {
   const entries = [];
   const hasLiquidSyntax = /({{[\s\S]*?}}|{%\s*[\s\S]*?%})/.test(cssText);
@@ -793,8 +835,15 @@ export async function scanWorkspace(sourceDir) {
     const assetKind = getAssetKind(relativePath);
     const ext = path.extname(relativePath).toLowerCase();
 
+    if (TAILWIND_CONFIG_FILE_REGEX.test(relativePath)) {
+      markTailwindSignal(tracker, relativePath, 'Tailwind config file');
+    }
+
     if (assetKind === 'css' || assetKind === 'css-liquid') {
       staticParts.push(stripLiquidTags(stripStyleBlocks(content)));
+      if (TAILWIND_CSS_DIRECTIVE_REGEX.test(content) || TAILWIND_IMPORT_REGEX.test(content)) {
+        markTailwindSignal(tracker, relativePath, 'Tailwind CSS directive');
+      }
       if (assetKind === 'css-liquid') {
         dynamicParts.push(extractLiquidDynamic(content));
       }
@@ -1082,6 +1131,8 @@ export async function scanWorkspace(sourceDir) {
       unusedRules,
       estimatedSavingsBytes
     },
+    tailwindDetected: tracker.tailwindDetected,
+    tailwindEvidence: tracker.tailwindEvidence,
     entries,
     commentEntries,
     warnings,
@@ -1099,12 +1150,15 @@ export async function scanWorkspace(sourceDir) {
         stylesheetLinks: tracker.stylesheetLinks,
         scriptSrcTags: tracker.scriptSrcTags,
         inlineStyleAttributes: tracker.inlineStyleAttributes,
-        fontFaceCount: tracker.fontFaceCount
+        fontFaceCount: tracker.fontFaceCount,
+        tailwindDetected: tracker.tailwindDetected
       },
       unusedCssFiles,
       unusedJsFiles,
       imagesMissingDimensions: tracker.imagesMissingDimensions,
       imagesMissingLazy: tracker.imagesMissingLazy,
+      tailwindDetected: tracker.tailwindDetected,
+      tailwindEvidence: tracker.tailwindEvidence,
       recommendations: buildPerformanceRecommendations({
         entries,
         summary: {

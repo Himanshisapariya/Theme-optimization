@@ -1067,6 +1067,50 @@ select:focus {
   border-style: dashed;
 }
 
+.tailwind-notice {
+  padding: 24px;
+  display: grid;
+  gap: 14px;
+}
+
+.tailwind-notice h3 {
+  margin: 0;
+}
+
+.tailwind-notice p {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.tailwind-evidence {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.tailwind-evidence li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.tailwind-evidence li span:first-child {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-word;
+}
+
+.tailwind-evidence li span:last-child {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .protected-tag span:first-child {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.86rem;

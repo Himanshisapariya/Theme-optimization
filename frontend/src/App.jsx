@@ -13,6 +13,17 @@ const DEFAULT_PROTECTED_SELECTOR_PATTERNS = [
   'slider',
   'form',
   'page-width',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  '.h0',
+  '.h1',
+  '.h2',
+  '.h3',
+  '.h4',
+  '.h5',
   '--left',
   '--right',
   '--center'
@@ -68,11 +79,19 @@ function classTokenMatchesPattern(token, pattern) {
   return new RegExp(`(^|[-_])${escaped}($|[-_])`, 'i').test(normalizedToken);
 }
 
+function tagTokenMatchesPattern(token, pattern) {
+  const normalizedToken = String(token || '').toLowerCase();
+  const normalizedPattern = String(pattern || '').toLowerCase();
+  return Boolean(normalizedToken && normalizedPattern && normalizedToken === normalizedPattern);
+}
+
 function selectorMatchesProtected(selector, patterns) {
   const normalizedSelector = String(selector || '');
   if (!normalizedSelector) return false;
   const normalizedLower = normalizedSelector.toLowerCase();
   const classTokens = Array.from(normalizedSelector.matchAll(/\.([_a-zA-Z0-9-]+)/g), (match) => match[1].toLowerCase());
+  const tagTokens = Array.from(normalizedSelector.matchAll(/(^|[\s>+~,(])([_a-zA-Z][-_a-zA-Z0-9]*)/g), (match) => match[2].toLowerCase())
+    .filter((token) => !token.startsWith('.'));
 
   return patterns.some((rawPattern) => {
     const pattern = String(rawPattern || '').trim();
@@ -85,6 +104,10 @@ function selectorMatchesProtected(selector, patterns) {
     }
 
     if (classTokens.some((token) => classTokenMatchesPattern(token, lowerPattern))) {
+      return true;
+    }
+
+    if (tagTokens.some((token) => tagTokenMatchesPattern(token, lowerPattern))) {
       return true;
     }
 
@@ -442,6 +465,8 @@ export default function App() {
   const [performanceReport, setPerformanceReport] = useState(null);
   const [reportTab, setReportTab] = useState('css');
   const [commentEntries, setCommentEntries] = useState([]);
+  const [tailwindDetected, setTailwindDetected] = useState(false);
+  const [tailwindEvidence, setTailwindEvidence] = useState([]);
   const fileHandlesRef = useRef(new Map());
   const rootDirHandleRef = useRef(null);
   const localFilePathsRef = useRef(new Map());
@@ -538,6 +563,8 @@ export default function App() {
     setEntries([]);
     setSelectedIds(new Set());
     setCommentEntries([]);
+    setTailwindDetected(false);
+    setTailwindEvidence([]);
     setSelectedCommentIds(new Set());
     setSelectedUnusedCssFiles(new Set());
     setSelectedUnusedJsFiles(new Set());
@@ -824,6 +851,8 @@ export default function App() {
       setSummary(data.summary);
       setEntries(data.entries);
       setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
+      setTailwindDetected(Boolean(data.tailwindDetected));
+      setTailwindEvidence(Array.isArray(data.tailwindEvidence) ? data.tailwindEvidence : []);
       setPerformanceReport(data.performance || null);
       setExpandedRecommendations(new Set(
         (Array.isArray(data.performance?.recommendations) ? data.performance.recommendations : [])
@@ -844,22 +873,23 @@ export default function App() {
       setScanWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       const recommendationCount = Array.isArray(data.performance?.recommendations) ? data.performance.recommendations.length : 0;
       const commentCount = Array.isArray(data.commentEntries) ? data.commentEntries.length : 0;
-      if (data.summary.totalRules === 0) {
+      const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
+      if (Boolean(data.tailwindDetected)) {
+        setMessage(`Tailwind CSS detected. CSS Removal Is Not Supported In Tailwind Projects.${commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : ''}${performanceText}`);
+      } else if (data.summary.totalRules === 0) {
         const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
         setMessage(`Scan complete, but no CSS rules were found. Check that the uploaded folder contains .css files.${commentText}`);
       } else if (data.summary.unusedRules === 0) {
-        const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
         const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
         setMessage(`Scan complete. No unused selectors were found in this upload.${commentText}${performanceText}`);
       } else {
         const warningText = Array.isArray(data.warnings) && data.warnings.length > 0
           ? ` Skipped ${data.warnings.length} problematic file(s).`
           : '';
-        const performanceText = recommendationCount > 0 ? ` ${recommendationCount} performance recommendation(s) are ready.` : '';
         const commentText = commentCount > 0 ? ` ${commentCount} commented code block(s) were found.` : '';
         setMessage(`Scan complete. Found ${data.summary.unusedRules} unused selectors.${commentText}${warningText}${performanceText}`);
       }
-      setSelectorTab(recommendationCount > 0 ? 'performance' : 'css');
+      setSelectorTab('css');
       setStep('scanned');
     } catch (error) {
       setMessage(error.message);
@@ -883,6 +913,11 @@ export default function App() {
 
   async function handleRemove(mode) {
     if (!jobId) return;
+
+    if (mode === 'css' && tailwindDetected) {
+      setMessage('CSS Removal Is Not Supported In Tailwind Projects');
+      return;
+    }
 
     const selectedCssIds = mode === 'css' ? Array.from(selectedIdsForRemoval) : [];
     const selectedCommentIdsToRemove = mode === 'comments' ? selectedCommentIdsForRemoval : [];
@@ -1216,6 +1251,8 @@ export default function App() {
       setSummary(data.summary || initialSummary);
       setEntries(Array.isArray(data.entries) ? data.entries : []);
       setCommentEntries(Array.isArray(data.commentEntries) ? data.commentEntries : []);
+      setTailwindDetected(Boolean(data.tailwindDetected));
+      setTailwindEvidence(Array.isArray(data.tailwindEvidence) ? data.tailwindEvidence : []);
       setPerformanceReport(data.performance || null);
       setExpandedRecommendations(new Set(
         (Array.isArray(data.performance?.recommendations) ? data.performance.recommendations : [])
@@ -1295,7 +1332,8 @@ export default function App() {
   }
 
   const hasResults = entries.length > 0 || commentEntries.length > 0;
-  const cssRemoveEnabled = selectedIdsForRemoval.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
+  const cssCleanupUnsupported = tailwindDetected;
+  const cssRemoveEnabled = selectedIdsForRemoval.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step) && !cssCleanupUnsupported;
   const commentRemoveEnabled = selectedCommentIdsForRemoval.length > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const unlinkedFilesRemoveEnabled = selectedUnusedCssFiles.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
   const unlinkedJsFilesRemoveEnabled = selectedUnusedJsFiles.size > 0 && !loading && ['scanned', 'removed', 'applied'].includes(step);
@@ -1804,199 +1842,218 @@ export default function App() {
           <div className="selector-sections">
             {selectorTab === 'css' ? (
               <div className="selector-tab-panel selector-tab-panel-css">
-                <div className="css-workspace">
-                  <details className="protected-panel selector-card selector-card-protected" open>
-                    <summary className="protected-summary">
-                      <div>
-                        <h3>Protected selectors</h3>
-                        <p>Keep app classes or selector fragments out of removal. Separate entries with commas or new lines.</p>
-                      </div>
-                      <span className="protected-summary-meta">
-                        {protectedSelectors.length} protected
-                      </span>
-                    </summary>
-                    <div className="protected-body">
-                      <div className="protected-actions">
-                        <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
-                          Add to ignore
-                        </button>
-                        <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
-                          Clear all
-                        </button>
-                      </div>
-                      <textarea
-                        value={protectedSelectorsText}
-                        onChange={(event) => setProtectedSelectorsText(event.target.value)}
-                        placeholder=".scaqv-quickadd, .omnisend"
-                        rows={3}
-                      />
-                      <div className="preset-row">
-                        <input
-                          className="preset-input"
-                          type="text"
-                          value={presetName}
-                          onChange={(event) => setPresetName(event.target.value)}
-                          placeholder="Preset name"
+                {cssCleanupUnsupported ? (
+                  <div className="selector-card selector-card-notice tailwind-notice">
+                    <h3>CSS Removal Is Not Supported In Tailwind Projects</h3>
+                    <p>
+                      The uploaded theme appears to use Tailwind CSS, so CSS cleanup is disabled to avoid removing utility-driven selectors.
+                    </p>
+                    {tailwindEvidence.length > 0 ? (
+                      <ul className="tailwind-evidence">
+                        {tailwindEvidence.map((item) => (
+                          <li key={`${item.filePath}-${item.reason}`}>
+                            <span>{item.filePath}</span>
+                            <span>{item.reason}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="css-workspace">
+                    <details className="protected-panel selector-card selector-card-protected" open>
+                      <summary className="protected-summary">
+                        <div>
+                          <h3>Protected selectors</h3>
+                          <p>Keep app classes or selector fragments out of removal. Separate entries with commas or new lines.</p>
+                        </div>
+                        <span className="protected-summary-meta">
+                          {protectedSelectors.length} protected
+                        </span>
+                      </summary>
+                      <div className="protected-body">
+                        <div className="protected-actions">
+                          <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
+                            Add to ignore
+                          </button>
+                          <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
+                            Clear all
+                          </button>
+                        </div>
+                        <textarea
+                          value={protectedSelectorsText}
+                          onChange={(event) => setProtectedSelectorsText(event.target.value)}
+                          placeholder=".scaqv-quickadd, .omnisend"
+                          rows={3}
                         />
-                        <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectorDraft.length === 0}>
-                          Save
-                        </button>
-                        <select
-                          className="preset-select"
-                          value={activePresetName}
-                          onChange={(event) => loadProtectedPreset(event.target.value)}
-                        >
-                          <option value="">Load preset</option>
-                          {savedProtectedPresets.map((preset) => (
-                            <option key={preset.name} value={preset.name}>
-                              {preset.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="secondary" type="button" onClick={refreshProtectedPresets}>
-                          Refresh
-                        </button>
-                        <button
-                          className="secondary"
-                          type="button"
-                          onClick={() => deleteProtectedPreset(activePresetName)}
-                          disabled={!activePresetName}
-                        >
-                          Delete
-                        </button>
+                        <div className="preset-row">
+                          <input
+                            className="preset-input"
+                            type="text"
+                            value={presetName}
+                            onChange={(event) => setPresetName(event.target.value)}
+                            placeholder="Preset name"
+                          />
+                          <button className="secondary" type="button" onClick={saveProtectedPreset} disabled={!presetName.trim() || protectedSelectorDraft.length === 0}>
+                            Save
+                          </button>
+                          <select
+                            className="preset-select"
+                            value={activePresetName}
+                            onChange={(event) => loadProtectedPreset(event.target.value)}
+                          >
+                            <option value="">Load preset</option>
+                            {savedProtectedPresets.map((preset) => (
+                              <option key={preset.name} value={preset.name}>
+                                {preset.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button className="secondary" type="button" onClick={refreshProtectedPresets}>
+                            Refresh
+                          </button>
+                          <button
+                            className="secondary"
+                            type="button"
+                            onClick={() => deleteProtectedPreset(activePresetName)}
+                            disabled={!activePresetName}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        <div className="protected-tags">
+                          {protectedSelectors.length === 0 ? (
+                            <p className="empty-state">No protected selectors added yet.</p>
+                          ) : (
+                            protectedSelectors.map((value) => (
+                              <button
+                                key={value}
+                                type="button"
+                                className={`protected-tag ${DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value) ? 'protected-tag-default' : ''}`}
+                                onClick={() => removeProtectedSelector(value)}
+                                disabled={DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value)}
+                                title={DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value) ? 'Built-in default ignore pattern' : 'Click to remove'}
+                              >
+                                <span>{value}</span>
+                                <span aria-hidden="true">×</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
                       </div>
-                      <div className="protected-tags">
-                        {protectedSelectors.length === 0 ? (
-                          <p className="empty-state">No protected selectors added yet.</p>
-                        ) : (
-                          protectedSelectors.map((value) => (
+                    </details>
+
+                    <div className="css-selector-grid">
+                      <section className="selector-group selector-group-unused selector-card">
+                        <div className="group-head">
+                          <div>
+                            <h3>Removable unused selectors</h3>
+                            <p>These are preselected for removal.</p>
+                          </div>
+                          <div className="group-tools">
+                            <span className="group-count">{removableUnusedEntries.length}</span>
+                            {showCssPdfAction ? (
+                              <button className="secondary" type="button" onClick={() => handleDownload('report-css')}>
+                                Download CSS PDF
+                              </button>
+                            ) : null}
                             <button
-                              key={value}
-                              type="button"
-                              className={`protected-tag ${DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value) ? 'protected-tag-default' : ''}`}
-                              onClick={() => removeProtectedSelector(value)}
-                              disabled={DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value)}
-                              title={DEFAULT_PROTECTED_SELECTOR_PATTERNS.includes(value) ? 'Built-in default ignore pattern' : 'Click to remove'}
+                              className="primary"
+                              onClick={() => handleRemove('css')}
+                              disabled={!cssRemoveEnabled}
                             >
-                              <span>{value}</span>
-                              <span aria-hidden="true">×</span>
+                              {loading && step === 'removing' ? 'Removing...' : 'Remove selected CSS'}
                             </button>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </details>
+                          </div>
+                        </div>
 
-                  <div className="css-selector-grid">
-                <section className="selector-group selector-group-unused selector-card">
-                  <div className="group-head">
-                    <div>
-                      <h3>Removable unused selectors</h3>
-                      <p>These are preselected for removal.</p>
-                    </div>
-                    <div className="group-tools">
-                      <span className="group-count">{removableUnusedEntries.length}</span>
-                      {showCssPdfAction ? (
-                        <button className="secondary" type="button" onClick={() => handleDownload('report-css')}>
-                          Download CSS PDF
-                        </button>
-                      ) : null}
-                      <button
-                        className="primary"
-                        onClick={() => handleRemove('css')}
-                        disabled={!cssRemoveEnabled}
-                      >
-                        {loading && step === 'removing' ? 'Removing...' : 'Remove selected CSS'}
-                      </button>
-                    </div>
-                  </div>
+                        <div className="table-wrap">
+                          <table className="selector-table selector-table-comments">
+                            <thead>
+                              <tr>
+                                <th>Remove</th>
+                                <th>Selector</th>
+                                <th>File name</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {removableUnusedEntries.length === 0 ? (
+                                <tr>
+                                  <td colSpan="3" className="empty-state">
+                                    No removable unused selectors found.
+                                  </td>
+                                </tr>
+                              ) : (
+                                removableUnusedEntries.map((entry) => (
+                                  <tr key={entry.id} className="row-unused">
+                                    <td>
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedIds.has(entry.id)}
+                                        onChange={() => toggleSelection(entry.id)}
+                                      />
+                                    </td>
+                                    <td className="selector-cell">{entry.selector}</td>
+                                    <td>{entry.fileName}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
 
-                  <div className="table-wrap">
-                    <table className="selector-table selector-table-comments">
-                      <thead>
-                        <tr>
-                          <th>Remove</th>
-                          <th>Selector</th>
-                          <th>File name</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {removableUnusedEntries.length === 0 ? (
-                          <tr>
-                            <td colSpan="3" className="empty-state">
-                              No removable unused selectors found.
-                            </td>
-                          </tr>
-                        ) : (
-                          removableUnusedEntries.map((entry) => (
-                            <tr key={entry.id} className="row-unused">
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedIds.has(entry.id)}
-                                  onChange={() => toggleSelection(entry.id)}
-                                />
-                              </td>
-                              <td className="selector-cell">{entry.selector}</td>
-                              <td>{entry.fileName}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+                      <section className="selector-group selector-group-used selector-card selector-card-muted">
+                        <div className="group-head">
+                          <div>
+                            <h3>Ignored app selectors</h3>
+                            <p>These matched your protected selectors and will not be removed.</p>
+                          </div>
+                          <div className="group-tools">
+                            <input
+                              className="filter-input"
+                              type="search"
+                              value={ignoredFilter}
+                              onChange={(event) => setIgnoredFilter(event.target.value)}
+                              placeholder="Filter ignored selectors"
+                            />
+                            <span className="group-count">
+                              {filteredIgnoredUnusedEntries.length}
+                              {ignoredFilter.trim() ? ` / ${ignoredUnusedEntries.length}` : ''}
+                            </span>
+                          </div>
+                        </div>
 
-                <section className="selector-group selector-group-used selector-card selector-card-muted">
-                  <div className="group-head">
-                    <div>
-                      <h3>Ignored app selectors</h3>
-                      <p>These matched your protected selectors and will not be removed.</p>
-                    </div>
-                    <div className="group-tools">
-                      <input
-                        className="filter-input"
-                        type="search"
-                        value={ignoredFilter}
-                        onChange={(event) => setIgnoredFilter(event.target.value)}
-                        placeholder="Filter ignored selectors"
-                      />
-                      <span className="group-count">
-                        {filteredIgnoredUnusedEntries.length}
-                        {ignoredFilter.trim() ? ` / ${ignoredUnusedEntries.length}` : ''}
-                      </span>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Selector</th>
+                                <th>File name</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filteredIgnoredUnusedEntries.length === 0 ? (
+                                <tr>
+                                  <td colSpan="2" className="empty-state">
+                                    {ignoredFilter.trim() ? 'No ignored selectors matched your filter.' : 'No protected selectors matched.'}
+                                  </td>
+                                </tr>
+                              ) : (
+                                filteredIgnoredUnusedEntries.map((entry) => (
+                                  <tr key={entry.id} className="row-used">
+                                    <td className="selector-cell">{entry.selector}</td>
+                                    <td>{entry.fileName}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
                     </div>
                   </div>
-
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Selector</th>
-                          <th>File name</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredIgnoredUnusedEntries.length === 0 ? (
-                          <tr>
-                            <td colSpan="2" className="empty-state">
-                              {ignoredFilter.trim() ? 'No ignored selectors matched your filter.' : 'No protected selectors matched.'}
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredIgnoredUnusedEntries.map((entry) => (
-                            <tr key={entry.id} className="row-used">
-                              <td className="selector-cell">{entry.selector}</td>
-                              <td>{entry.fileName}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-                  </div>
-                </div>
+                )}
               </div>
             ) : selectorTab === 'comments' ? (
               <div className="selector-tab-panel selector-tab-panel-comments">

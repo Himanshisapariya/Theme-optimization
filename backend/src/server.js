@@ -242,6 +242,8 @@ app.post('/api/scan/:jobId', async (req, res) => {
     res.json({
       jobId,
       summary: report.summary,
+      tailwindDetected: Boolean(report.tailwindDetected),
+      tailwindEvidence: Array.isArray(report.tailwindEvidence) ? report.tailwindEvidence : [],
       entries: report.entries,
       commentEntries: report.commentEntries || [],
       warnings: report.warnings || [],
@@ -261,6 +263,8 @@ app.get('/api/jobs/:jobId', async (req, res) => {
     res.json({
       jobId: req.params.jobId,
       summary: report.summary,
+      tailwindDetected: Boolean(report.tailwindDetected),
+      tailwindEvidence: Array.isArray(report.tailwindEvidence) ? report.tailwindEvidence : [],
       entries: report.entries,
       commentEntries: report.commentEntries || [],
       performance: report.performance || null
@@ -307,6 +311,10 @@ app.post('/api/remove/:jobId', async (req, res) => {
     const invalidCommentIds = commentSelectedIds.filter((id) => !allowedCommentIds.has(id));
     if (invalidIds.length > 0 || invalidCommentIds.length > 0) {
       return res.status(400).json({ error: 'One or more selectors are no longer available for removal.' });
+    }
+
+    if (mode === 'css' && report.tailwindDetected) {
+      return res.status(400).json({ error: 'CSS Removal Is Not Supported In Tailwind Projects' });
     }
 
     const result = await removeSelectedSelectors(paths.sourceDir, cssSelectedIds, commentSelectedIds, report, protectedPatterns, {
@@ -463,6 +471,8 @@ app.post('/api/restore/:jobId', async (req, res) => {
       jobId: req.params.jobId,
       message: 'Cleanup restored. The original workspace and report are back.',
       summary: report.summary,
+      tailwindDetected: Boolean(report.tailwindDetected),
+      tailwindEvidence: Array.isArray(report.tailwindEvidence) ? report.tailwindEvidence : [],
       entries: report.entries,
       commentEntries: report.commentEntries || [],
       warnings: report.warnings || [],

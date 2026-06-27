@@ -558,7 +558,7 @@ export default function App() {
     () => normalizeProtectedSelectors([...protectedSelectors, ...parseProtectedSelectors(protectedSelectorsText)]),
     [protectedSelectors, protectedSelectorsText]
   );
-  function clearResults() {
+  function clearScanResults() {
     setSummary(initialSummary);
     setEntries([]);
     setSelectedIds(new Set());
@@ -576,6 +576,32 @@ export default function App() {
     setLastCssRemoval(null);
     setLastCommentRemoval(null);
     setHasCleanupChanges(false);
+  }
+
+  function clearWorkspace() {
+    clearScanResults();
+    setFiles([]);
+    setJobId('');
+    setMessage('Resetting workspace...');
+    setLoading(false);
+    setStep('idle');
+    setDropActive(false);
+    setInputKey((current) => current + 1);
+    setScanWarnings([]);
+    setPerformanceReport(null);
+    setReportTab('css');
+    setCommentEntries([]);
+    setTailwindDetected(false);
+    setTailwindEvidence([]);
+    setLocalFolderName('');
+    setLocalFolderMode('none');
+    fileHandlesRef.current = new Map();
+    rootDirHandleRef.current = null;
+    localFilePathsRef.current = new Map();
+
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 0);
   }
 
   function parseProtectedSelectors(text) {
@@ -747,7 +773,7 @@ export default function App() {
       if (!response.ok) throw new Error(data.error || 'Upload failed.');
 
       setJobId(data.jobId);
-      clearResults();
+      clearScanResults();
       setMessage(data.message);
       setStep('uploaded');
     } catch (error) {
@@ -1457,7 +1483,7 @@ export default function App() {
               <button className="primary" onClick={handleScan} disabled={!jobId || loading}>
                 {loading && step === 'scanning' ? 'Scanning...' : 'Scan'}
               </button>
-              <button className="secondary" onClick={clearResults} disabled={!hasResults}>
+              <button className="secondary" onClick={clearWorkspace} disabled={files.length === 0 && !hasResults}>
                 Clear Results
               </button>
             </div>

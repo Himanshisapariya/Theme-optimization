@@ -1173,6 +1173,74 @@ tbody tr:hover td { background: var(--surface-hover); }
   color: var(--text);
 }
 
+.selector-tooltip-host {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(124, 77, 255, 0.10), rgba(255, 116, 94, 0.08));
+  border: 1px solid rgba(124, 77, 255, 0.16);
+  color: var(--accent-strong);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.65) inset;
+}
+
+.selector-tooltip-host::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 20;
+  width: max-content;
+  min-width: 280px;
+  max-width: min(540px, 72vw);
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #24104f 0%, #4f2db7 45%, #7c4dff 100%);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  box-shadow: 0 18px 45px rgba(32, 16, 80, 0.28);
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  display: none;
+}
+
+.selector-tooltip-host::before {
+  content: '';
+  position: absolute;
+  left: 16px;
+  bottom: calc(100% + 4px);
+  border: 8px solid transparent;
+  border-top-color: #4f2db7;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  display: none;
+  z-index: 21;
+}
+
+.selector-tooltip-host:hover::after,
+.selector-tooltip-host:hover::before,
+.selector-tooltip-host:focus-visible::after,
+.selector-tooltip-host:focus-visible::before {
+  display: block;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.selector-tooltip-host:focus-visible {
+  outline: 2px solid rgba(124, 77, 255, 0.35);
+  outline-offset: 2px;
+}
+
 .empty-state {
   text-align: center;
   color: var(--text-3);

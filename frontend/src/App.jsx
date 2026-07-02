@@ -2092,7 +2092,11 @@ export default function App() {
                                         onChange={() => toggleSelection(entry.id)}
                                       />
                                     </td>
-                                    <td className="selector-cell">{entry.selector}</td>
+                                    <td className="selector-cell">
+                                      <span className="selector-tooltip-host" data-tooltip={entry.ruleText || entry.selector}>
+                                        {entry.selector}
+                                      </span>
+                                    </td>
                                     <td>{entry.filePath || entry.fileName}</td>
                                     <td>{formatBytes(entry.estimatedBytes || 0)}</td>
                                     <td><span className="badge badge-unused">Unused</span></td>

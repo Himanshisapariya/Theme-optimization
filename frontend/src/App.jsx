@@ -675,14 +675,6 @@ export default function App() {
     setMessage(`Deleted protected preset "${name}".`);
   }
 
-  function refreshProtectedPresets() {
-    const next = readSavedProtectedPresets();
-    setSavedProtectedPresets(next);
-    setMessage(next.length > 0
-      ? `Loaded ${next.length} saved protected preset(s).`
-      : 'No saved protected presets were found.');
-  }
-
   React.useEffect(() => {
     if (entries.length === 0) return;
 
@@ -1487,8 +1479,11 @@ export default function App() {
             </div>
           </div>
 
-          <div className="panel summary-panel">
-            <h2>Scan Summary</h2>
+          <details className="panel summary-panel" open>
+            <summary className="panel-summary">
+              <h2>Scan Summary</h2>
+              <span className="panel-toggle" aria-hidden="true">▼</span>
+            </summary>
 
             <div className="summary-stats-row">
               <div className="summary-stat">
@@ -1853,16 +1848,18 @@ export default function App() {
                 </div>
               </div>
             )}
-          </div>
+          </details>
+
         </section>
 
-        <section className="panel table-panel">
-          <div className="table-head">
+        <details className="panel table-panel" open>
+          <summary className="table-head">
             <div>
               <h2>Review &amp; Cleanup</h2>
               <p>Use the tab-specific remove button to delete only CSS selectors or only comments.</p>
             </div>
-          </div>
+            <span className="panel-toggle" aria-hidden="true">▼</span>
+          </summary>
 
           <div className="selector-tabs-wrap">
             <div className="selector-tabs" role="tablist" aria-label="Selector sections">
@@ -1962,20 +1959,22 @@ export default function App() {
                         </span>
                       </summary>
                       <div className="protected-body">
-                        <div className="protected-actions">
-                          <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
-                            Add to ignore
-                          </button>
-                          <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
-                            Clear all
-                          </button>
+                        <div className="protected-input-row">
+                          <textarea
+                            value={protectedSelectorsText}
+                            onChange={(event) => setProtectedSelectorsText(event.target.value)}
+                            placeholder=".scaqv-quickadd, .omnisend"
+                            rows={3}
+                          />
+                          <div className="protected-actions">
+                            <button className="secondary" type="button" onClick={addProtectedSelectors} disabled={!protectedSelectorsText.trim()}>
+                              Add to ignore
+                            </button>
+                            <button className="secondary" type="button" onClick={clearProtectedSelectors} disabled={protectedSelectors.length === 0}>
+                              Clear all
+                            </button>
+                          </div>
                         </div>
-                        <textarea
-                          value={protectedSelectorsText}
-                          onChange={(event) => setProtectedSelectorsText(event.target.value)}
-                          placeholder=".scaqv-quickadd, .omnisend"
-                          rows={3}
-                        />
                         <div className="preset-row">
                           <input
                             className="preset-input"
@@ -1999,9 +1998,6 @@ export default function App() {
                               </option>
                             ))}
                           </select>
-                          <button className="secondary" type="button" onClick={refreshProtectedPresets}>
-                            Refresh
-                          </button>
                           <button
                             className="secondary"
                             type="button"
@@ -2607,7 +2603,7 @@ export default function App() {
               </>
             )}
           </div>
-        </section>
+        </details>
 
         {scanWarnings.length > 0 ? (
           <section className="critical-warnings">

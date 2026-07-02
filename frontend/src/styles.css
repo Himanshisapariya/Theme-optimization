@@ -530,8 +530,55 @@ select:focus {
   padding: 24px;
 }
 
-.summary-panel > h2 {
+.summary-panel > summary,
+.table-panel > summary {
+  list-style: none;
+}
+
+.summary-panel > summary::-webkit-details-marker,
+.table-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-summary,
+.table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.panel-summary h2,
+.table-head h2 {
+  margin: 0;
+}
+
+.panel-summary .panel-toggle,
+.table-head .panel-toggle {
+  flex: none;
+}
+
+.summary-panel > summary {
   margin-bottom: 20px;
+}
+
+.panel-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: transform 0.14s, background 0.14s, border-color 0.14s, color 0.14s;
+}
+
+details[open] > summary .panel-toggle {
+  transform: rotate(180deg);
 }
 
 /* Top stats row */
@@ -836,18 +883,14 @@ select:focus {
 }
 
 .table-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
   padding: 22px 24px 0;
 }
 
+.table-panel:not([open]) > summary {
+  padding-bottom: 16px;
+}
+
 .table-head h2 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   margin: 0;
   font-size: 1.02rem;
   font-weight: 700;
@@ -985,11 +1028,26 @@ select:focus {
   gap: 12px;
 }
 
+.protected-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.protected-input-row textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .protected-actions {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  flex: none;
+  align-items: stretch;
+}
+
+.protected-actions button {
+  white-space: nowrap;
 }
 
 .protected-tags {
@@ -1026,6 +1084,17 @@ select:focus {
 
 .preset-input { flex: 1 1 180px; }
 .preset-select, .filter-input { min-width: 160px; }
+
+@media (max-width: 860px) {
+  .protected-input-row {
+    flex-direction: column;
+  }
+
+  .protected-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+}
 
 .inline-toggle {
   display: inline-flex;

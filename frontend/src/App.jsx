@@ -1400,20 +1400,7 @@ export default function App() {
             >
               Scans
             </button>
-            <button
-              type="button"
-              className={`app-nav-item ${activeTopTab === 'settings' ? 'app-nav-item-active' : ''}`}
-              onClick={() => setActiveTopTab('settings')}
-            >
-              Settings
-            </button>
           </nav>
-          <div className="app-topbar-actions" aria-hidden="true">
-            <span className="topbar-icon">◦</span>
-            <span className="topbar-icon">?</span>
-            <span className="topbar-button">New Scan</span>
-            <span className="avatar-badge">HP</span>
-          </div>
         </header>
 
         <div className="status-bar">
@@ -1450,23 +1437,13 @@ export default function App() {
             >
               <div className="dropzone-icon">☁</div>
               <div className="dropzone-copy">
-                <strong>Drag and drop your Shopify theme folder or ZIP</strong>
-                <span>Support for .liquid, .html, .css, .js and .zip archives</span>
+                <strong>Drag and drop your Shopify theme folder</strong>
+                <span>Support for .liquid, .html, .css, and .js files</span>
               </div>
               <div className="dropzone-actions">
                 <button className="upload-button" type="button" onClick={handleFolderButtonClick}>
                   📁 Upload Folder
                 </button>
-                <label className="upload-button upload-button-primary">
-                  <input
-                    key={`zip-${inputKey}`}
-                    type="file"
-                    accept=".zip"
-                    onChange={handleUpload}
-                    className="file-input"
-                  />
-                  ⬆ Upload ZIP
-                </label>
               </div>
             </div>
 
@@ -1869,11 +1846,6 @@ export default function App() {
               </div>
             )}
             </details>
-          ) : activeTopTab === 'settings' ? (
-            <div className="panel tab-placeholder">
-              <h2>Settings</h2>
-              <p>Theme and scan preferences will live here.</p>
-            </div>
           ) : null}
 
         </section>

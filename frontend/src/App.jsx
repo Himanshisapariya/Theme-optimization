@@ -490,6 +490,7 @@ export default function App() {
   const [lastCssRemoval, setLastCssRemoval] = useState(null);
   const [lastCommentRemoval, setLastCommentRemoval] = useState(null);
   const [hasCleanupChanges, setHasCleanupChanges] = useState(false);
+  const [activeTopTab, setActiveTopTab] = useState('dashboard');
   const shortCommentMaxLines = 2;
 
   const protectedPatterns = useMemo(
@@ -1377,7 +1378,7 @@ export default function App() {
   const canRestoreCleanup = hasCleanupChanges && !loading && Boolean(jobId);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell app-shell-tab-${activeTopTab}`}>
       <main className="container">
         <header className="app-topbar">
           <div className="app-brand">
@@ -1385,9 +1386,27 @@ export default function App() {
             <strong>ThemePurify</strong>
           </div>
           <nav className="app-nav" aria-label="Primary">
-            <span className="app-nav-item app-nav-item-active">Dashboard</span>
-            <span className="app-nav-item">Scans</span>
-            <span className="app-nav-item">Settings</span>
+            <button
+              type="button"
+              className={`app-nav-item ${activeTopTab === 'dashboard' ? 'app-nav-item-active' : ''}`}
+              onClick={() => setActiveTopTab('dashboard')}
+            >
+              Dashboard
+            </button>
+            <button
+              type="button"
+              className={`app-nav-item ${activeTopTab === 'scans' ? 'app-nav-item-active' : ''}`}
+              onClick={() => setActiveTopTab('scans')}
+            >
+              Scans
+            </button>
+            <button
+              type="button"
+              className={`app-nav-item ${activeTopTab === 'settings' ? 'app-nav-item-active' : ''}`}
+              onClick={() => setActiveTopTab('settings')}
+            >
+              Settings
+            </button>
           </nav>
           <div className="app-topbar-actions" aria-hidden="true">
             <span className="topbar-icon">◦</span>
@@ -1479,11 +1498,12 @@ export default function App() {
             </div>
           </div>
 
-          <details className="panel summary-panel" open>
-            <summary className="panel-summary">
-              <h2>Scan Summary</h2>
-              <span className="panel-toggle" aria-hidden="true">▼</span>
-            </summary>
+          {activeTopTab === 'scans' ? (
+            <details className="panel summary-panel" open>
+              <summary className="panel-summary">
+                <h2>Scan Summary</h2>
+                <span className="panel-toggle" aria-hidden="true">▼</span>
+              </summary>
 
             <div className="summary-stats-row">
               <div className="summary-stat">
@@ -1848,7 +1868,13 @@ export default function App() {
                 </div>
               </div>
             )}
-          </details>
+            </details>
+          ) : activeTopTab === 'settings' ? (
+            <div className="panel tab-placeholder">
+              <h2>Settings</h2>
+              <p>Theme and scan preferences will live here.</p>
+            </div>
+          ) : null}
 
         </section>
 
